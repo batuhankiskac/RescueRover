@@ -1,0 +1,17 @@
+{
+	"editor.insertSpaces": false,
+	"editor.tabSize": 4,
+	"editor.detectIndentation": false,
+	"[cpp]": {
+		"editor.insertSpaces": false,
+		"editor.tabSize": 4
+	},
+	"[c]": {
+		"editor.insertSpaces": false,
+		"editor.tabSize": 4
+	},
+	"[h]": {
+		"editor.insertSpaces": false,
+		"editor.tabSize": 4
+	}
+}
