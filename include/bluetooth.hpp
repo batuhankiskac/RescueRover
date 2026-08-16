@@ -1,9 +1,9 @@
 #pragma once
 
 #include <Arduino.h>
-#include "rover_types.h"
+#include "rover_types.hpp"
 
-void			bluetoothBegin();
+void bluetoothBegin();
 BluetoothCommand bluetoothPoll();
 Print & bluetoothOutput();
-void			bluetoothSendHelp();
+void bluetoothSendHelp();

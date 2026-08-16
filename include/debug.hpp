@@ -1,7 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
-#include "config.h"
+#include "config.hpp"
 
 #if DEBUG_ENABLED
 #define DEBUG_BEGIN(baud) Serial.begin(baud)
