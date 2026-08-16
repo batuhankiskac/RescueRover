@@ -5,5 +5,5 @@
 
 void bluetoothBegin();
 BluetoothCommand bluetoothPoll();
-Print & bluetoothOutput();
+Print& bluetoothOutput();
 void bluetoothSendHelp();

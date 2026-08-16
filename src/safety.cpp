@@ -5,25 +5,25 @@
 
 namespace {
 
-    SafetyStatus status = {};
-    uint32_t lastControlContactMs = 0;
-    bool manualEmergencyLatched = false;
-    bool rolloverLatched = false;
+SafetyStatus status = {};
+uint32_t lastControlContactMs = 0;
+bool manualEmergencyLatched = false;
+bool rolloverLatched = false;
 
-    bool previousObstacleWarning = false;
-    bool previousGasWarning = false;
-    bool previousGasCritical = false;
-    bool previousTempWarning = false;
-    bool previousTempCritical = false;
-    bool previousTiltWarning = false;
-    bool previousTiltCritical = false;
-    bool previousUltrasonicFault = false;
+bool previousObstacleWarning = false;
+bool previousGasWarning = false;
+bool previousGasCritical = false;
+bool previousTempWarning = false;
+bool previousTempCritical = false;
+bool previousTiltWarning = false;
+bool previousTiltCritical = false;
+bool previousUltrasonicFault = false;
 
-    int16_t absoluteAngle(int16_t value) {
-        return value < 0 ? static_cast < int16_t > (-value) : value;
-    }
-
+int16_t absoluteAngle(int16_t value) {
+    return value < 0 ? static_cast<int16_t>(-value) : value;
 }
+
+}  // namespace
 
 void safetyBegin(uint32_t nowMs) {
     lastControlContactMs = nowMs;
@@ -44,8 +44,7 @@ void safetyRequestEmergencyStop() {
 }
 
 bool safetyClearEmergency() {
-    const bool temperatureStops =
-    status.temperatureCritical && (TEMP_CRITICAL_STOPS_MOTORS != 0);
+    const bool temperatureStops = status.temperatureCritical && (TEMP_CRITICAL_STOPS_MOTORS != 0);
     if (status.gasCritical || status.tiltCritical || temperatureStops) {
         return false;
     }
@@ -54,21 +53,16 @@ bool safetyClearEmergency() {
     return true;
 }
 
-uint16_t safetyUpdate(const SensorData & data, uint32_t nowMs) {
+uint16_t safetyUpdate(const SensorData& data, uint32_t nowMs) {
     uint16_t events = SAFETY_EVENT_NONE;
 
     status.ultrasonicFault = !data.distanceValid;
-    status.obstacleWarning =
-        data.distanceValid && data.distanceCm <= OBSTACLE_WARNING_CM;
-    status.obstacleCritical =
-        data.distanceValid && data.distanceCm <= OBSTACLE_CRITICAL_CM;
-status.gasWarning = data.gasState == GasState::WARNING ||
-data.gasState == GasState::CRITICAL;
-status.gasCritical = data.gasState == GasState::CRITICAL;
-    status.temperatureWarning =
-        data.dhtValid && data.temperatureDeciC >= TEMP_WARNING_C * 10;
-    status.temperatureCritical =
-        data.dhtValid && data.temperatureDeciC >= TEMP_CRITICAL_C * 10;
+    status.obstacleWarning = data.distanceValid && data.distanceCm <= OBSTACLE_WARNING_CM;
+    status.obstacleCritical = data.distanceValid && data.distanceCm <= OBSTACLE_CRITICAL_CM;
+    status.gasWarning = data.gasState == GasState::WARNING || data.gasState == GasState::CRITICAL;
+    status.gasCritical = data.gasState == GasState::CRITICAL;
+    status.temperatureWarning = data.dhtValid && data.temperatureDeciC >= TEMP_WARNING_C * 10;
+    status.temperatureCritical = data.dhtValid && data.temperatureDeciC >= TEMP_CRITICAL_C * 10;
 
     int16_t greatestAngle = 0;
     if (data.mpuValid) {
@@ -113,24 +107,15 @@ status.gasCritical = data.gasState == GasState::CRITICAL;
     previousTiltCritical = status.tiltCritical;
     previousUltrasonicFault = status.ultrasonicFault;
 
-    const bool temperatureStops =
-    status.temperatureCritical && (TEMP_CRITICAL_STOPS_MOTORS != 0);
-    status.blockAllMotion = manualEmergencyLatched || rolloverLatched ||
-        status.gasCritical || status.tiltCritical ||
-        temperatureStops;
-    status.blockForward = status.blockAllMotion || status.obstacleCritical ||
-        (status.ultrasonicFault &&
-         (ULTRASONIC_FAILSAFE_BLOCK_FORWARD != 0));
+    const bool temperatureStops = status.temperatureCritical && (TEMP_CRITICAL_STOPS_MOTORS != 0);
+    status.blockAllMotion = manualEmergencyLatched || rolloverLatched || status.gasCritical || status.tiltCritical || temperatureStops;
+    status.blockForward = status.blockAllMotion || status.obstacleCritical || (status.ultrasonicFault && (ULTRASONIC_FAILSAFE_BLOCK_FORWARD != 0));
     status.emergencyActive = status.blockAllMotion;
-    status.warningActive = status.emergencyActive || status.obstacleWarning ||
-        status.gasWarning || status.temperatureWarning ||
-        status.tiltWarning || status.ultrasonicFault;
+    status.warningActive = status.emergencyActive || status.obstacleWarning || status.gasWarning || status.temperatureWarning || status.tiltWarning || status.ultrasonicFault;
 
     motorSetSafetyInhibit(status.blockAllMotion, status.blockForward);
 
-    if (motorIsMoving() &&
-        static_cast < uint32_t > (nowMs - lastControlContactMs) >=
-        COMMAND_TIMEOUT_MS) {
+    if (motorIsMoving() && static_cast<uint32_t>(nowMs - lastControlContactMs) >= COMMAND_TIMEOUT_MS) {
         stopMotors();
         events |= SAFETY_EVENT_COMMAND_TIMEOUT;
     }
@@ -139,15 +124,15 @@ status.gasCritical = data.gasState == GasState::CRITICAL;
 }
 
 bool safetyCanMove(MotionCommand command) {
-if (command == MotionCommand::STOP) {
+    if (command == MotionCommand::STOP) {
         return true;
     }
     if (status.blockAllMotion) {
         return false;
     }
-return command != MotionCommand::FORWARD || !status.blockForward;
+    return command != MotionCommand::FORWARD || !status.blockForward;
 }
 
-const            SafetyStatus & safetyGetStatus() {
+const SafetyStatus& safetyGetStatus() {
     return status;
 }

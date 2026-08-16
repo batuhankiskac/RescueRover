@@ -5,29 +5,27 @@
 
 namespace {
 
-    LightMode lightMode = AUTO_LIGHT_MODE ? LightMode ::AUTO
-    :LightMode::FORCED_OFF;
-    uint32_t pulseEndMs = 0;
+LightMode lightMode = AUTO_LIGHT_MODE ? LightMode::AUTO
+                                      : LightMode::FORCED_OFF;
+uint32_t pulseEndMs = 0;
 
-    void writeHeadlight(bool on) {
-        digitalWrite(Pins::HEADLIGHT,
-                     (on == (HEADLIGHT_ACTIVE_HIGH != 0)) ? HIGH : LOW);
-    }
-
-    void writeBuzzer(bool on) {
-        digitalWrite(Pins::ALARM,
-                     (on == (BUZZER_ACTIVE_HIGH != 0)) ? HIGH : LOW);
-    }
-
-    bool timeBefore(uint32_t nowMs, uint32_t endMs) {
-        return static_cast < int32_t > (nowMs - endMs) < 0;
-    }
-
+void writeHeadlight(bool on) {
+    digitalWrite(Pins::HEADLIGHT, (on == (HEADLIGHT_ACTIVE_HIGH != 0)) ? HIGH : LOW);
 }
 
+void writeBuzzer(bool on) {
+    digitalWrite(Pins::ALARM, (on == (BUZZER_ACTIVE_HIGH != 0)) ? HIGH : LOW);
+}
+
+bool timeBefore(uint32_t nowMs, uint32_t endMs) {
+    return static_cast<int32_t>(nowMs - endMs) < 0;
+}
+
+}  // namespace
+
 void outputsBegin() {
-pinMode(Pins::HEADLIGHT, OUTPUT);
-pinMode(Pins::ALARM, OUTPUT);
+    pinMode(Pins::HEADLIGHT, OUTPUT);
+    pinMode(Pins::ALARM, OUTPUT);
     writeHeadlight(false);
     writeBuzzer(false);
 }
@@ -49,9 +47,9 @@ void outputsPulseAlarm(uint32_t nowMs, uint16_t durationMs) {
 
 void outputsUpdate(bool dark, bool warningActive, bool emergencyActive, uint32_t nowMs) {
     bool headlightsOn = false;
-if (lightMode == LightMode::FORCED_ON) {
+    if (lightMode == LightMode::FORCED_ON) {
         headlightsOn = true;
-} else if (lightMode == LightMode::AUTO) {
+    } else if (lightMode == LightMode::AUTO) {
         headlightsOn = dark;
     }
     writeHeadlight(headlightsOn);

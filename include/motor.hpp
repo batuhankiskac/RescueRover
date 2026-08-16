@@ -12,5 +12,5 @@ bool turnRight(uint8_t speed);
 void stopMotors();
 
 void motorSetSafetyInhibit(bool blockAllMotion, bool blockForward);
-const       MotorStatus &motorGetStatus();
+const MotorStatus& motorGetStatus();
 bool motorIsMoving();

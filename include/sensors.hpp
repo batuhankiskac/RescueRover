@@ -5,7 +5,7 @@
 
 void sensorsBegin();
 void sensorsUpdate(uint32_t nowMs, bool motorsMoving, bool scanMode);
-const            SensorData &sensorsGetData();
+const SensorData& sensorsGetData();
 
 bool sensorsStartSoundWindow(uint32_t nowMs);
 bool sensorsSoundWindowActive();
