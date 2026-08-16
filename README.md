@@ -12,7 +12,7 @@ has been electrically checked and tested in a controlled area.
 
 | Uno pin | Connection | Direction / note |
 |---|---|---|
-| D0 / D1 | USB serial | Reserved for upload and 9600-baud debugging |
+| D0 / D1 | USB / upload | Not used by the firmware; kept free for uploading |
 | D2 | HC-SR501 OUT | Digital input |
 | D3 | L298N ENA **and** ENB | Shared PWM output; remove both EN jumpers |
 | D4 | L298N IN1 | Left motor direction |
@@ -65,10 +65,10 @@ access are implemented directly to keep flash and SRAM use low.
 
 The final checked build uses:
 
-- Flash: 14,526 bytes of 32,256 bytes (45.0%)
-- Static SRAM: 650 bytes of 2,048 bytes (31.7%)
+- Flash: 13,410 bytes of 32,256 bytes (41.6%)
+- Static SRAM: 475 bytes of 2,048 bytes (23.2%)
 
-That leaves 1,398 bytes for stack and runtime use. The firmware does not use
+That leaves 1,573 bytes for stack and runtime use. The firmware does not use
 heap allocation.
 
 ## Wiring and power
@@ -228,8 +228,8 @@ movement command is accepted:
 
 ## Telemetry
 
-Telemetry is sent every 500 ms over Bluetooth and, when `DEBUG_ENABLED` is 1,
-over USB Serial. It uses no JSON or formatting buffer:
+Telemetry is sent every 500 ms to the Bluetooth terminal. It uses no JSON or
+formatting buffer:
 
 ```text
 D:34,T:26.0,H:58.0,G:412,GR:420,GS:NORMAL,SND:72,PIR:0,PITCH:4,ROLL:2,LIGHT:1,STATE:DRIVING
@@ -248,28 +248,29 @@ ALERT:TILT_CRITICAL
 ALERT:COMMAND_TIMEOUT
 ```
 
-## Build, upload, and monitor
+## Build, upload, and terminal connection
 
 1. Open this folder in VS Code with the PlatformIO extension installed.
 2. Run **PlatformIO: Build**, or from the project terminal run `pio run`.
 3. Connect the Uno and run **PlatformIO: Upload**, or `pio run -t upload`.
-4. Open **PlatformIO: Serial Monitor**, or run `pio device monitor`.
-5. The USB monitor speed is 9600 as set in `platformio.ini`.
+4. Pair the HC-05 with the computer and connect to it from a terminal at 9600
+   baud as described in the Bluetooth protocol section.
 
-No upload port is hard-coded; PlatformIO can discover the connected Uno. Disable
-USB telemetry/debug prints by changing `DEBUG_ENABLED` to 0.
+No upload port is hard-coded; PlatformIO can discover the connected Uno. The
+firmware does not print telemetry to USB; all runtime information goes to the
+Bluetooth terminal.
 
 ## Controlled test procedure
 
 Start with the rover raised so its wheels cannot touch anything. Keep the motor
-supply off while checking sensors. Watch USB Serial telemetry throughout.
+supply off while checking sensors. Watch the Bluetooth terminal throughout.
 
 1. **Motor directions:** connect a working HC-SR04 with clear space, power the
    motor stage, and send repeated `F`, `B`, `L`, `R`, and `S`. Confirm both sides
    and reverse a side in configuration if required. Test speed digits at low
    settings first.
 2. **Bluetooth:** confirm `RESCUE_ROVER:READY`, send `?`, then verify each command
-   from the Mac terminal while USB telemetry remains available.
+   and all telemetry from the Mac terminal.
 3. **Command timeout:** send `F` once and no heartbeat. Verify stopping at about
    one second and `ALERT:COMMAND_TIMEOUT`.
 4. **Ultrasonic stop:** at low wheel speed, move a flat target from more than 30

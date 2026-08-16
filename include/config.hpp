@@ -1,7 +1,5 @@
 #pragma once
 
-#define DEBUG_ENABLED 1
-#define USB_SERIAL_BAUD 9600UL
 #define BT_BAUD_RATE 9600UL
 
 #define STARTUP_DURATION_MS 2000UL

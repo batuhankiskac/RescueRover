@@ -83,9 +83,6 @@ void pulseAlarm(uint32_t now, uint16_t duration) {
 
 void sendAlert(const __FlashStringHelper* message) {
     bluetooth.println(message);
-#if DEBUG_ENABLED
-    Serial.println(message);
-#endif
 }
 
 void writeMotorSide(uint8_t pin1, uint8_t pin2, int8_t direction, bool reversed) {
@@ -424,9 +421,6 @@ void printTelemetry(Print& output, uint32_t now, bool scan) {
 
 void sendTelemetry(uint32_t now, bool scan = false) {
     printTelemetry(bluetooth, now, scan);
-#if DEBUG_ENABLED
-    printTelemetry(Serial, now, scan);
-#endif
 }
 
 void updateScan(uint32_t now) {
@@ -462,9 +456,6 @@ void updateOutputs(uint32_t now) {
 }
 
 void setup() {
-#if DEBUG_ENABLED
-    Serial.begin(USB_SERIAL_BAUD);
-#endif
     bluetooth.begin(BT_BAUD_RATE);
     bluetooth.listen();
 
@@ -485,9 +476,6 @@ void setup() {
     lastTelemetryMs = bootMs;
 
     bluetooth.println(F("RESCUE_ROVER:READY"));
-#if DEBUG_ENABLED
-    Serial.println(F("RESCUE_ROVER:READY"));
-#endif
 }
 
 void loop() {
