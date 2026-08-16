@@ -24,4 +24,4 @@ constexpr uint8_t BT_TX = 11;
 
 constexpr uint8_t DHT11_DATA = 12;
 constexpr uint8_t LIGHT_DIGITAL = 13;
-}  // namespace Pins
+}
