@@ -8,7 +8,7 @@
 namespace {
 
 SensorData data = {};
-uint8_t pendingEvents = SENSOR_EVENT_NONE;
+uint8_t pendingEvents = 0;
 uint32_t sensorStartMs = 0;
 
 uint32_t lastMpuMs = 0;
@@ -86,18 +86,18 @@ void readDistance() {
 
 void updateGasState() {
     if (!elapsed(millis(), sensorStartMs, GAS_WARMUP_MS)) {
-        data.gasState = GasState::WARMING;
+        data.gasState = GAS_WARMING;
         return;
     }
 
     const uint16_t warning = GAS_BASELINE_ADC + GAS_WARNING_ABOVE_BASELINE;
     const uint16_t critical = GAS_BASELINE_ADC + GAS_CRITICAL_ABOVE_BASELINE;
     if (data.gasFiltered >= critical) {
-        data.gasState = GasState::CRITICAL;
+        data.gasState = GAS_CRITICAL;
     } else if (data.gasFiltered >= warning) {
-        data.gasState = GasState::WARNING;
+        data.gasState = GAS_WARNING;
     } else {
-        data.gasState = GasState::NORMAL;
+        data.gasState = GAS_NORMAL;
     }
 }
 
@@ -233,8 +233,8 @@ void readLight() {
 }
 
 void readPir(bool motorsMoving) {
-    data.pirReady = elapsed(millis(), sensorStartMs, PIR_STARTUP_MS);
-    const bool current = data.pirReady && !motorsMoving && digitalRead(Pins::PIR) == HIGH;
+    const bool ready = elapsed(millis(), sensorStartMs, PIR_STARTUP_MS);
+    const bool current = ready && !motorsMoving && digitalRead(Pins::PIR) == HIGH;
     data.pirMotion = current;
     if (current && !lastPirState) {
         pendingEvents |= SENSOR_EVENT_MOTION;
@@ -269,8 +269,7 @@ void updateSoundWindow(uint32_t nowMs) {
 
     soundWindowRunning = false;
     data.soundAmplitude = soundSampleCount > 1U ? soundMaximum - soundMinimum : 0U;
-    data.soundDetected = data.soundAmplitude >= SOUND_THRESHOLD;
-    if (data.soundDetected) {
+    if (data.soundAmplitude >= SOUND_THRESHOLD) {
         pendingEvents |= SENSOR_EVENT_SOUND;
     }
 }
@@ -291,7 +290,7 @@ void sensorsBegin() {
     Wire.setWireTimeout(3000UL, true);
     const bool configured = writeMpuRegister(0x6B, 0x00) && writeMpuRegister(0x1C, 0x00) && writeMpuRegister(0x1A, 0x03);
     data.mpuValid = configured && mpuPresent();
-    data.gasState = GasState::WARMING;
+    data.gasState = GAS_WARMING;
 
     sensorStartMs = millis();
     lastMpuMs = sensorStartMs - MPU_PERIOD_MS;
@@ -327,7 +326,7 @@ void sensorsUpdate(uint32_t nowMs, bool motorsMoving, bool scanMode) {
     readPir(motorsMoving);
     updateSoundWindow(nowMs);
     if (!motorsMoving && !scanMode && !soundWindowRunning && elapsed(nowMs, lastSoundWindowMs, SOUND_IDLE_PERIOD_MS)) {
-        (void)sensorsStartSoundWindow(nowMs);
+        sensorsStartSoundWindow(nowMs);
     }
 }
 
@@ -335,9 +334,9 @@ const SensorData& sensorsGetData() {
     return data;
 }
 
-bool sensorsStartSoundWindow(uint32_t nowMs) {
+void sensorsStartSoundWindow(uint32_t nowMs) {
     if (soundWindowRunning) {
-        return false;
+        return;
     }
 
     (void)analogRead(Pins::SOUND_ANALOG);
@@ -348,7 +347,6 @@ bool sensorsStartSoundWindow(uint32_t nowMs) {
     lastSoundWindowMs = nowMs;
     nextSoundSampleUs = micros();
     soundWindowRunning = true;
-    return true;
 }
 
 bool sensorsSoundWindowActive() {
@@ -373,6 +371,6 @@ void sensorsRefreshForScan(uint32_t nowMs) {
 
 uint8_t sensorsConsumeEvents() {
     const uint8_t events = pendingEvents;
-    pendingEvents = SENSOR_EVENT_NONE;
+    pendingEvents = 0;
     return events;
 }

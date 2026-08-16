@@ -1,10 +1,8 @@
 # Rescue Rover firmware
 
-Modular PlatformIO firmware for an Arduino Uno R3 search-and-rescue rover. It
-supports Bluetooth driving, scheduled sensing, automatic headlights, scan mode,
-compact telemetry, and safety-enforced motor stopping. The design avoids
-`String`, dynamic allocation, JSON, large buffers, and third-party sensor
-frameworks.
+PlatformIO firmware for an Arduino Uno R3 search-and-rescue rover. It supports
+Bluetooth driving, scheduled sensing, automatic headlights, scan mode, compact
+telemetry, and safety-enforced motor stopping.
 
 This is prototype equipment, not a certified gas, fire, structural-safety, or
 life-detection instrument. Never send it into a hazardous environment until it
@@ -46,30 +44,18 @@ RescueRover/
 ├── platformio.ini
 ├── README.md
 ├── include/
-│   ├── bluetooth.h
-│   ├── config.h
-│   ├── debug.h
-│   ├── motor.h
-│   ├── outputs.h
-│   ├── pins.h
-│   ├── rover_types.h
-│   ├── safety.h
-│   ├── sensors.h
-│   └── telemetry.h
+│   ├── config.hpp
+│   ├── pins.hpp
+│   └── sensors.hpp
 └── src/
-    ├── bluetooth.cpp
     ├── main.cpp
-    ├── motor.cpp
-    ├── outputs.cpp
-    ├── safety.cpp
-    ├── sensors.cpp
-    └── telemetry.cpp
+    └── sensors.cpp
 ```
 
-Responsibilities are deliberately small: `main.cpp` coordinates the state
-machine and scan phases; the safety module is the only policy layer; the motor
-module enforces its inhibit decisions again at the hardware boundary; sensors
-own scheduling and acquisition; telemetry owns all human-readable output.
+`main.cpp` contains the normal Arduino flow: commands, motors, safety checks,
+outputs, and telemetry. `sensors.cpp` is separate because the DHT11 timing,
+MPU6050 communication, filtering, and scheduled reads are the genuinely
+hardware-specific part of the project.
 
 ## Required libraries
 
@@ -79,10 +65,10 @@ access are implemented directly to keep flash and SRAM use low.
 
 The final checked build uses:
 
-- Flash: 14,952 bytes of 32,256 bytes (46.4%)
-- Static SRAM: 725 bytes of 2,048 bytes (35.4%)
+- Flash: 14,526 bytes of 32,256 bytes (45.0%)
+- Static SRAM: 650 bytes of 2,048 bytes (31.7%)
 
-That leaves 1,323 bytes for stack and runtime use. The firmware does not use
+That leaves 1,398 bytes for stack and runtime use. The firmware does not use
 heap allocation.
 
 ## Wiring and power
@@ -98,7 +84,7 @@ heater alone is a significant load.
 Remove the ENA and ENB jumper caps. Join ENA and ENB and connect the joined node
 to D3. Connect IN1..IN4 to D4..D7. This saves one pin but both motor sides must
 use the same PWM speed. If a side runs backward, first swap that motor's wires or
-change `MOTOR_LEFT_REVERSED` / `MOTOR_RIGHT_REVERSED` in `config.h`.
+change `MOTOR_LEFT_REVERSED` / `MOTOR_RIGHT_REVERSED` in `config.hpp`.
 
 For a real safety build, add a 10 kΩ pulldown from the joined ENA/ENB node to
 ground. It holds the bridge disabled while the Uno is resetting and D3 has not
@@ -144,7 +130,7 @@ breakout markings. STATE and EN are not used. The default data-mode speed is
 ## Configuration and calibration
 
 All editable thresholds, polarities, periods, speeds, and feature choices are
-in `include/config.h`; all pins are in `include/pins.h`.
+in `include/config.hpp`; all pins are in `include/pins.hpp`.
 
 The supplied thresholds are starting values only:
 
@@ -225,7 +211,8 @@ incremental sound window, evaluates PIR, then refreshes DHT when its two-second
 limit allows, gas, distance, tilt, and light. It sends a `SCAN:` summary. A new
 movement command cancels a scan.
 
-Safety rules are enforced both before a command and inside the motor module:
+Safety conditions are checked on every pass through `loop()` and before a new
+movement command is accepted:
 
 - A critical front obstacle stops forward motion and rejects new forward
   commands. Backward/pivot escape remains available.
