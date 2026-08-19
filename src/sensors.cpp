@@ -24,6 +24,7 @@ uint8_t distanceSampleIndex = 0;
 uint8_t ultrasonicFailures = 0;
 bool gasFilterInitialized = false;
 bool mpuFilterInitialized = false;
+uint8_t mpuAddress = MPU6050_ADDRESS;
 bool lastPirState = false;
 
 bool soundWindowRunning = false;
@@ -173,15 +174,15 @@ bool readDht11() {
     return true;
 }
 
-bool writeMpuRegister(uint8_t address, uint8_t value) {
-    Wire.beginTransmission(static_cast<uint8_t>(MPU6050_ADDRESS));
-    Wire.write(address);
+bool writeMpuRegister(uint8_t registerAddress, uint8_t value) {
+    Wire.beginTransmission(mpuAddress);
+    Wire.write(registerAddress);
     Wire.write(value);
     return Wire.endTransmission(true) == 0;
 }
 
-bool mpuPresent() {
-    Wire.beginTransmission(static_cast<uint8_t>(MPU6050_ADDRESS));
+bool mpuPresentAt(uint8_t address) {
+    Wire.beginTransmission(address);
     Wire.write(0x75);
     if (Wire.endTransmission(false) != 0) {
         return false;
@@ -200,16 +201,22 @@ int16_t readI16() {
 }
 
 void readMpu() {
-    Wire.beginTransmission(static_cast<uint8_t>(MPU6050_ADDRESS));
+    Wire.beginTransmission(mpuAddress);
     Wire.write(0x3B);
-    if (Wire.endTransmission(false) != 0 || Wire.requestFrom(static_cast<uint8_t>(MPU6050_ADDRESS), static_cast<uint8_t>(6)) != 6) {
+    if (Wire.endTransmission(false) != 0 || Wire.requestFrom(mpuAddress, static_cast<uint8_t>(6)) != 6) {
         data.mpuValid = false;
+        mpuFilterInitialized = false;
         return;
     }
 
     const int16_t ax = readI16();
     const int16_t ay = readI16();
     const int16_t az = readI16();
+    if (ax == 0 && ay == 0 && az == 0) {
+        data.mpuValid = false;
+        mpuFilterInitialized = false;
+        return;
+    }
     constexpr float RAD_TO_DEG_F = 57.2957795F;
     const float roll = atan2f(static_cast<float>(ay), static_cast<float>(az)) * RAD_TO_DEG_F + MPU_ROLL_OFFSET_DEG;
     const float pitch = atan2f(-static_cast<float>(ax), sqrtf(static_cast<float>(ay) * static_cast<float>(ay) + static_cast<float>(az) * static_cast<float>(az))) * RAD_TO_DEG_F + MPU_PITCH_OFFSET_DEG;
@@ -288,8 +295,21 @@ void sensorsBegin() {
 
     Wire.begin();
     Wire.setWireTimeout(3000UL, true);
-    const bool configured = writeMpuRegister(0x6B, 0x00) && writeMpuRegister(0x1C, 0x00) && writeMpuRegister(0x1A, 0x03);
-    data.mpuValid = configured && mpuPresent();
+    bool present = mpuPresentAt(mpuAddress);
+    if (!present) {
+        mpuAddress = MPU6050_ADDRESS == 0x68U ? 0x69U : 0x68U;
+        present = mpuPresentAt(mpuAddress);
+    }
+
+    bool configured = false;
+    if (present && writeMpuRegister(0x6B, 0x80)) {
+        delay(100);
+        configured = writeMpuRegister(0x6B, 0x01) &&
+                     writeMpuRegister(0x1C, 0x00) &&
+                     writeMpuRegister(0x1A, 0x03);
+        delay(10);
+    }
+    data.mpuValid = configured && mpuPresentAt(mpuAddress);
     data.gasState = GAS_WARMING;
 
     sensorStartMs = millis();
