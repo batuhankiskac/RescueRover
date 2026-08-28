@@ -1,11 +1,19 @@
 #include "sensors.hpp"
 
+#include <Adafruit_MPU6050.h>
+#include <DHT.h>
+#include <NewPing.h>
 #include <Wire.h>
 #include <math.h>
 #include "config.hpp"
 #include "pins.hpp"
 
 namespace {
+
+DHT dht(Pins::DHT11_DATA, DHT11);
+Adafruit_MPU6050 mpu;
+NewPing sonar(Pins::ULTRASONIC_TRIG, Pins::ULTRASONIC_ECHO,
+              ULTRASONIC_MAX_CM);
 
 SensorData data = {};
 uint8_t pendingEvents = 0;
@@ -25,6 +33,7 @@ uint8_t ultrasonicFailures = 0;
 bool gasFilterInitialized = false;
 bool mpuFilterInitialized = false;
 uint8_t mpuAddress = MPU6050_ADDRESS;
+bool mpuReady = false;
 bool lastPirState = false;
 
 bool soundWindowRunning = false;
@@ -54,16 +63,9 @@ uint16_t medianDistance() {
 }
 
 void readDistance() {
-    digitalWrite(Pins::ULTRASONIC_TRIG, LOW);
-    delayMicroseconds(2);
-    digitalWrite(Pins::ULTRASONIC_TRIG, HIGH);
-    delayMicroseconds(10);
-    digitalWrite(Pins::ULTRASONIC_TRIG, LOW);
+    const uint16_t centimeters = static_cast<uint16_t>(sonar.ping() / 58UL);
 
-    const uint32_t durationUs = pulseIn(Pins::ULTRASONIC_ECHO, HIGH, ULTRASONIC_TIMEOUT_US);
-    const uint16_t centimeters = static_cast<uint16_t>(durationUs / 58UL);
-
-    if (durationUs == 0 || centimeters < ULTRASONIC_MIN_CM || centimeters > ULTRASONIC_MAX_CM) {
+    if (centimeters < ULTRASONIC_MIN_CM || centimeters > ULTRASONIC_MAX_CM) {
         if (ultrasonicFailures < 255U) {
             ++ultrasonicFailures;
         }
@@ -116,110 +118,46 @@ void readGas() {
     updateGasState();
 }
 
-uint32_t waitWhileLevel(uint8_t level, uint32_t timeoutUs) {
-    const uint32_t startUs = micros();
-    while (digitalRead(Pins::DHT11_DATA) == level) {
-        if (static_cast<uint32_t>(micros() - startUs) > timeoutUs) {
-            return 0;
-        }
+void readDht11() {
+    data.dhtValid = dht.read();
+    if (!data.dhtValid) {
+        return;
     }
-    return static_cast<uint32_t>(micros() - startUs);
-}
-
-bool readDht11() {
-    uint8_t bytes[5] = {0, 0, 0, 0, 0};
-
-    pinMode(Pins::DHT11_DATA, OUTPUT);
-    digitalWrite(Pins::DHT11_DATA, LOW);
-    delay(18);
-    digitalWrite(Pins::DHT11_DATA, HIGH);
-    delayMicroseconds(30);
-    pinMode(Pins::DHT11_DATA, INPUT_PULLUP);
-
-    const bool responseOk = waitWhileLevel(HIGH, 120) != 0 && waitWhileLevel(LOW, 120) != 0 && waitWhileLevel(HIGH, 120) != 0;
-    if (!responseOk) {
-        data.dhtValid = false;
-        return false;
-    }
-
-    for (uint8_t bit = 0; bit < 40U; ++bit) {
-        if (waitWhileLevel(LOW, 90) == 0) {
-            data.dhtValid = false;
-            return false;
-        }
-        const uint32_t highDuration = waitWhileLevel(HIGH, 120);
-        if (highDuration == 0) {
-            data.dhtValid = false;
-            return false;
-        }
-        bytes[bit / 8U] <<= 1U;
-        if (highDuration > 50U) {
-            bytes[bit / 8U] |= 1U;
-        }
-    }
-
-    const uint8_t checksum = static_cast<uint8_t>(bytes[0] + bytes[1] + bytes[2] + bytes[3]);
-    if (checksum != bytes[4]) {
-        data.dhtValid = false;
-        return false;
-    }
-
-    data.humidityDeciPct = static_cast<uint16_t>(bytes[0]) * 10U + bytes[1];
-    int16_t temperature = static_cast<int16_t>(bytes[2] & 0x7FU) * 10 + bytes[3];
-    if ((bytes[2] & 0x80U) != 0U) {
-        temperature = -temperature;
-    }
-    data.temperatureDeciC = temperature;
-    data.dhtValid = true;
-    return true;
-}
-
-bool writeMpuRegister(uint8_t registerAddress, uint8_t value) {
-    Wire.beginTransmission(mpuAddress);
-    Wire.write(registerAddress);
-    Wire.write(value);
-    return Wire.endTransmission(true) == 0;
-}
-
-bool mpuPresentAt(uint8_t address) {
-    Wire.beginTransmission(address);
-    Wire.write(0x75);
-    if (Wire.endTransmission(false) != 0) {
-        return false;
-    }
-    if (Wire.requestFrom(static_cast<uint8_t>(MPU6050_ADDRESS), static_cast<uint8_t>(1)) != 1) {
-        return false;
-    }
-    const uint8_t identity = Wire.read();
-    return identity == 0x68U || identity == 0x69U;
-}
-
-int16_t readI16() {
-    const uint8_t highByte = Wire.read();
-    const uint8_t lowByte = Wire.read();
-    return static_cast<int16_t>((static_cast<uint16_t>(highByte) << 8U) | lowByte);
+    data.temperatureDeciC = static_cast<int16_t>(dht.readTemperature() * 10.0F);
+    data.humidityDeciPct = static_cast<uint16_t>(dht.readHumidity() * 10.0F);
 }
 
 void readMpu() {
+    if (!mpuReady) {
+        data.mpuValid = false;
+        return;
+    }
+
     Wire.beginTransmission(mpuAddress);
-    Wire.write(0x3B);
-    if (Wire.endTransmission(false) != 0 || Wire.requestFrom(mpuAddress, static_cast<uint8_t>(6)) != 6) {
+    if (Wire.endTransmission(true) != 0) {
         data.mpuValid = false;
         mpuFilterInitialized = false;
         return;
     }
 
-    const int16_t ax = readI16();
-    const int16_t ay = readI16();
-    const int16_t az = readI16();
-    if (ax == 0 && ay == 0 && az == 0) {
+    sensors_event_t acceleration;
+    if (!mpu.getAccelerometerSensor()->getEvent(&acceleration)) {
         data.mpuValid = false;
         mpuFilterInitialized = false;
         return;
     }
+
     constexpr float RAD_TO_DEG_F = 57.2957795F;
-    const float roll = atan2f(static_cast<float>(ay), static_cast<float>(az)) * RAD_TO_DEG_F + MPU_ROLL_OFFSET_DEG;
-    const float pitch = atan2f(-static_cast<float>(ax), sqrtf(static_cast<float>(ay) * static_cast<float>(ay) + static_cast<float>(az) * static_cast<float>(az))) * RAD_TO_DEG_F + MPU_PITCH_OFFSET_DEG;
+    const float ax = acceleration.acceleration.x;
+    const float ay = acceleration.acceleration.y;
+    const float az = acceleration.acceleration.z;
+    if (ax == 0.0F && ay == 0.0F && az == 0.0F) {
+        data.mpuValid = false;
+        mpuFilterInitialized = false;
+        return;
+    }
+    const float roll = atan2f(ay, az) * RAD_TO_DEG_F + MPU_ROLL_OFFSET_DEG;
+    const float pitch = atan2f(-ax, sqrtf(ay * ay + az * az)) * RAD_TO_DEG_F + MPU_PITCH_OFFSET_DEG;
 
     const int16_t newRoll = static_cast<int16_t>(roll);
     const int16_t newPitch = static_cast<int16_t>(pitch);
@@ -292,26 +230,21 @@ void sensorsBegin() {
     pinMode(Pins::SOUND_ANALOG, INPUT);
     pinMode(Pins::LIGHT_ANALOG, INPUT);
     pinMode(Pins::PIR, INPUT);
-    pinMode(Pins::DHT11_DATA, INPUT_PULLUP);
     digitalWrite(Pins::ULTRASONIC_TRIG, LOW);
 
+    dht.begin();
     Wire.begin();
     Wire.setWireTimeout(3000UL, true);
-    bool present = mpuPresentAt(mpuAddress);
-    if (!present) {
+    mpuReady = mpu.begin(mpuAddress, &Wire);
+    if (!mpuReady) {
         mpuAddress = MPU6050_ADDRESS == 0x68U ? 0x69U : 0x68U;
-        present = mpuPresentAt(mpuAddress);
+        mpuReady = mpu.begin(mpuAddress, &Wire);
     }
-
-    bool configured = false;
-    if (present && writeMpuRegister(0x6B, 0x80)) {
-        delay(100);
-        configured = writeMpuRegister(0x6B, 0x01) &&
-                     writeMpuRegister(0x1C, 0x00) &&
-                     writeMpuRegister(0x1A, 0x03);
-        delay(10);
+    if (mpuReady) {
+        mpu.setAccelerometerRange(MPU6050_RANGE_2_G);
+        mpu.setFilterBandwidth(MPU6050_BAND_44_HZ);
     }
-    data.mpuValid = configured && mpuPresentAt(mpuAddress);
+    data.mpuValid = mpuReady;
     data.gasState = GAS_WARMING;
 
     sensorStartMs = millis();
@@ -342,7 +275,7 @@ void sensorsUpdate(uint32_t nowMs, bool motorsMoving, bool scanMode) {
     }
     if (elapsed(nowMs, lastDhtMs, DHT_PERIOD_MS)) {
         lastDhtMs = nowMs;
-        (void)readDht11();
+        readDht11();
     }
 
     readPir(motorsMoving);
@@ -379,7 +312,7 @@ void sensorsRefreshForScan(uint32_t nowMs) {
     readPir(false);
     if (elapsed(nowMs, lastDhtMs, DHT_PERIOD_MS)) {
         lastDhtMs = nowMs;
-        (void)readDht11();
+        readDht11();
     }
     readGas();
     lastGasMs = nowMs;

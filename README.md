@@ -53,23 +53,24 @@ RescueRover/
 ```
 
 `main.cpp` contains the normal Arduino flow: commands, motors, safety checks,
-outputs, and telemetry. `sensors.cpp` is separate because the DHT11 timing,
-MPU6050 communication, filtering, and scheduled reads are the genuinely
-hardware-specific part of the project.
+outputs, and telemetry. `sensors.cpp` contains the sensor-library adapters,
+filtering, and scheduled reads.
 
 ## Required libraries
 
-No third-party PlatformIO libraries are required. `Wire` and `SoftwareSerial`
-come with the Arduino AVR framework. The DHT11 protocol and MPU6050 register
-access are implemented directly to keep flash and SRAM use low.
+PlatformIO installs the sensor libraries listed in `platformio.ini`: DHT sensor
+library 1.4.7, Adafruit MPU6050 2.2.9, Adafruit Unified Sensor 1.1.15, and
+NewPing 1.9.7. `Wire` and `SoftwareSerial` come with the Arduino AVR framework.
+The application still owns filtering, scheduling, safety checks, and telemetry.
 
 The final checked build uses:
 
-- Flash: 13,410 bytes of 32,256 bytes (41.6%)
-- Static SRAM: 475 bytes of 2,048 bytes (23.2%)
+- Flash: 20,434 bytes of 32,256 bytes (63.3%)
+- Static SRAM: 666 bytes of 2,048 bytes (32.5%)
 
-That leaves 1,573 bytes for stack and runtime use. The firmware does not use
-heap allocation.
+That leaves 1,382 bytes for stack and runtime use. The MPU6050 library creates
+its I2C adapter during setup; no application-level allocation occurs in the
+main loop.
 
 ## Wiring and power
 
@@ -316,9 +317,10 @@ supply off while checking sensors. Watch the Bluetooth terminal throughout.
 - The separate warning LED was dropped because the Uno has no remaining pin.
 - One front ultrasonic sensor cannot see rear/side hazards; backward and pivot
   escape commands are not obstacle-protected.
-- The HC-SR04 `pulseIn()` call can block for at most 23.5 ms. DHT11 protocol
-  startup blocks for 18 ms every two seconds. All other waiting, including scan
-  settling and acoustic sampling, is scheduled without a long delay.
+- The HC-SR04 library call waits for an echo up to the configured 400 cm limit,
+  and the DHT11 library read is blocking during its measurement. Both are
+  scheduled infrequently; all other waiting, including scan settling and
+  acoustic sampling, is scheduled without a long delay.
 - At 9600 baud a complete SoftwareSerial telemetry line occupies the transmitter
   for tens of milliseconds. This is why output is rate-limited; command timeout
   still has ample margin, but commands should be repeated.
