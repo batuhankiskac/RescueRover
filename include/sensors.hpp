@@ -14,6 +14,7 @@ struct SensorData {
     uint16_t gasRaw;
     uint16_t gasFiltered;
     uint16_t soundAmplitude;
+    uint16_t lightRaw;
     int16_t temperatureDeciC;
     uint16_t humidityDeciPct;
     int16_t pitchDeg;

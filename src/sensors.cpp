@@ -235,8 +235,10 @@ void readMpu() {
 }
 
 void readLight() {
-    const bool active = digitalRead(Pins::LIGHT_DIGITAL) == HIGH;
-    data.dark = LIGHT_ACTIVE_LOW ? !active : active;
+    data.lightRaw = static_cast<uint16_t>(analogRead(Pins::LIGHT_ANALOG));
+    data.dark = LIGHT_ANALOG_DARK_BELOW
+                    ? data.lightRaw < LIGHT_DARK_THRESHOLD
+                    : data.lightRaw >= LIGHT_DARK_THRESHOLD;
 }
 
 void readPir(bool motorsMoving) {
@@ -288,8 +290,8 @@ void sensorsBegin() {
     pinMode(Pins::ULTRASONIC_ECHO, INPUT);
     pinMode(Pins::MQ135_ANALOG, INPUT);
     pinMode(Pins::SOUND_ANALOG, INPUT);
+    pinMode(Pins::LIGHT_ANALOG, INPUT);
     pinMode(Pins::PIR, INPUT);
-    pinMode(Pins::LIGHT_DIGITAL, INPUT);
     pinMode(Pins::DHT11_DATA, INPUT_PULLUP);
     digitalWrite(Pins::ULTRASONIC_TRIG, LOW);
 

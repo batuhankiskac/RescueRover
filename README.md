@@ -24,18 +24,18 @@ has been electrically checked and tested in a controlled area.
 | D10 | HC-05 TXD | SoftwareSerial RX; direct connection is normally safe |
 | D11 | HC-05 RXD | SoftwareSerial TX **through a 5 V-to-3.3 V divider** |
 | D12 | DHT11 OUT | Digital bidirectional data |
-| D13 | HW-072 DO | Digital input; polarity is configurable |
+| D13 | Headlight driver | Digital output |
 | A0 | MQ-135 AO | Analog input |
 | A1 | Sound module AO | Analog input |
-| A2 | Headlight driver | Digital output |
+| A2 | 4-pin light module AO | Analog input |
 | A3 | Active buzzer | Digital output; shared alarm output |
 | A4 | MPU6050 SDA | I2C |
 | A5 | MPU6050 SCL | I2C |
 
 There are no pin conflicts. SoftwareSerial uses D10/D11, Timer 2 PWM is used on
 D3, and the MPU6050 owns A4/A5. The Uno has no pin left for a separate warning
-LED, so A3 is the one alarm output. A2 and A3 are analog-header pins used as
-digital outputs.
+LED, so A3 is the one alarm output. The analog light sensor uses A2, while the
+headlight driver was moved to D13.
 
 ## Project tree
 
@@ -116,12 +116,12 @@ breakout markings. STATE and EN are not used. The default data-mode speed is
   undersized supply.
 - LM393 microphone module: AO A1; DO is unused.
 - HC-SR501: OUT D2. Its startup stabilization is 30 seconds by default.
-- HW-072: DO D13. Set its potentiometer physically, then reverse
-  `LIGHT_ACTIVE_LOW` if telemetry reports darkness backward.
+- 4-pin light module: VCC to 5 V, GND to ground, AO to A2, and leave DO
+  disconnected. The module's AO value is read as a 0..1023 ADC value.
 - GY-521: SDA A4 and SCL A5. A normal GY-521 breakout is commonly powered from
   5 V through its onboard regulator; verify the markings and schematic of your
   exact board before applying power.
-- Headlights: D/A2 must drive a logic-level MOSFET or transistor if the LEDs
+- Headlights: D13 must drive a logic-level MOSFET or transistor if the LEDs
   exceed safe GPIO current. Use LED current limiting. Do not power lamp current
   directly from an Uno pin.
 - Active buzzer: D/A3. Use a transistor if its current exceeds the GPIO rating.
@@ -154,8 +154,10 @@ The supplied thresholds are starting values only:
   `MPU_ROLL_OFFSET_DEG`, then test warning, critical, and rollover angles while
   supporting the rover. Accelerometer-only angles are affected by vehicle
   acceleration and vibration.
-- Turn the LDR potentiometer around the desired transition and verify the
-  `LIGHT` telemetry field. `LIGHT:1` means the firmware considers it dark.
+- With the rover in representative bright and dark conditions, observe
+  `LRAW` and set `LIGHT_DARK_THRESHOLD` between the two readings. `LIGHT:1`
+  means the firmware considers it dark. If the raw value increases in darkness,
+  set `LIGHT_ANALOG_DARK_BELOW` to `0`.
 - Compare DHT11 results with a reference meter before choosing temperature
   warnings. The DHT11 is low-resolution and is deliberately read no faster than
   every two seconds.
@@ -232,7 +234,7 @@ Telemetry is sent every 500 ms to the Bluetooth terminal. It uses no JSON or
 formatting buffer:
 
 ```text
-D:34,T:26.0,H:58.0,G:412,GR:420,GS:NORMAL,SND:72,PIR:0,PITCH:4,ROLL:2,LIGHT:1,STATE:DRIVING
+D:34,T:26.0,H:58.0,G:412,GR:420,GS:NORMAL,SND:72,LRAW:318,PIR:0,PITCH:4,ROLL:2,LIGHT:1,STATE:DRIVING
 ```
 
 `G` is filtered MQ-135 ADC, `GR` is raw ADC, and `GS` is `WARM`, `NORMAL`,
@@ -291,8 +293,9 @@ supply off while checking sensors. Watch the Bluetooth terminal throughout.
 9. **Tilt:** with motors unpowered, slowly support and tilt the chassis through
    warning and critical angles. Verify the alerts and critical motor block. Test
    `C` only after returning below critical.
-10. **Automatic headlights:** cover/uncover the LDR. Verify `LIGHT` and lamps. If
-    reversed, change `LIGHT_ACTIVE_LOW`; also test `H`, `J`, and `U`.
+10. **Automatic headlights:** cover/uncover the LDR. Verify `LRAW`, `LIGHT`, and
+    the lamps. If the analog direction is reversed, change
+    `LIGHT_ANALOG_DARK_BELOW`; also test `H`, `J`, and `U`.
 11. **Emergency stop:** while wheels are raised and turning slowly, send `X`.
     Verify immediate stop, rejected movement, `EMERGENCY`, and safe clearing by
     `C`.

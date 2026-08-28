@@ -4,8 +4,9 @@
 namespace Pins {
 constexpr uint8_t MQ135_ANALOG = A0;
 constexpr uint8_t SOUND_ANALOG = A1;
+constexpr uint8_t LIGHT_ANALOG = A2;
 
-constexpr uint8_t HEADLIGHT = A2;
+constexpr uint8_t HEADLIGHT = 13;
 constexpr uint8_t ALARM = A3;
 
 constexpr uint8_t PIR = 2;
@@ -23,5 +24,4 @@ constexpr uint8_t BT_RX = 10;
 constexpr uint8_t BT_TX = 11;
 
 constexpr uint8_t DHT11_DATA = 12;
-constexpr uint8_t LIGHT_DIGITAL = 13;
 }

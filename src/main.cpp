@@ -399,6 +399,8 @@ void printTelemetry(Print& output, uint32_t now, bool scan) {
     output.print(gasStateText(data.gasState));
     output.print(F(",SND:"));
     output.print(data.soundAmplitude);
+    output.print(F(",LRAW:"));
+    output.print(data.lightRaw);
     output.print(F(",PIR:"));
     output.print(data.pirMotion ? 1 : 0);
     output.print(F(",PITCH:"));
