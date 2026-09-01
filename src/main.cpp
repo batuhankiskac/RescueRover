@@ -5,7 +5,7 @@
 #include "pins.hpp"
 #include "sensors.hpp"
 
-SoftwareSerial esp32Link(Pins::ESP32_LINK_RX, Pins::ESP32_LINK_TX);
+SoftwareSerial bluetooth(Pins::BT_RX, Pins::BT_TX);
 
 enum Motion : uint8_t {
     MOTION_STOP,
@@ -82,7 +82,7 @@ void pulseAlarm(uint32_t now, uint16_t duration) {
 }
 
 void sendAlert(const __FlashStringHelper* message) {
-    esp32Link.println(message);
+    bluetooth.println(message);
 }
 
 void writeMotorSide(uint8_t pin1, uint8_t pin2, int8_t direction, bool reversed) {
@@ -150,11 +150,11 @@ void moveRover(Motion requested, uint32_t now) {
 }
 
 void processBluetooth(uint32_t now) {
-    if (esp32Link.available() == 0) {
+    if (bluetooth.available() == 0) {
         return;
     }
 
-    char command = (char)esp32Link.read();
+    char command = (char)bluetooth.read();
     if (command >= 'a' && command <= 'z') {
         command -= 'a' - 'A';
     }
@@ -219,7 +219,7 @@ void processBluetooth(uint32_t now) {
             lightMode = LIGHT_AUTO;
             break;
         case '?':
-            esp32Link.println(F("CMD:F/W,B,L/A,R/D,S,T,X,C,P,H,J,U,0-9,?"));
+            bluetooth.println(F("CMD:F/W,B,L/A,R/D,S,T,X,C,P,H,J,U,0-9,?"));
             break;
     }
 }
@@ -422,7 +422,7 @@ void printTelemetry(Print& output, uint32_t now, bool scan) {
 }
 
 void sendTelemetry(uint32_t now, bool scan = false) {
-    printTelemetry(esp32Link, now, scan);
+    printTelemetry(bluetooth, now, scan);
 }
 
 void updateScan(uint32_t now) {
@@ -458,8 +458,8 @@ void updateOutputs(uint32_t now) {
 }
 
 void setup() {
-    esp32Link.begin(ESP32_LINK_BAUD_RATE);
-    esp32Link.listen();
+    bluetooth.begin(BT_BAUD_RATE);
+    bluetooth.listen();
 
     pinMode(Pins::MOTOR_ENABLE_PWM, OUTPUT);
     pinMode(Pins::MOTOR_LEFT_IN1, OUTPUT);
@@ -477,7 +477,7 @@ void setup() {
     lastControlMs = bootMs;
     lastTelemetryMs = bootMs;
 
-    esp32Link.println(F("RESCUE_ROVER:READY"));
+    bluetooth.println(F("RESCUE_ROVER:READY"));
 }
 
 void loop() {

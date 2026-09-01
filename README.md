@@ -21,8 +21,8 @@ has been electrically checked and tested in a controlled area.
 | D7 | L298N IN4 | Right motor direction |
 | D8 | HC-SR04 TRIG | Digital output |
 | D9 | HC-SR04 ECHO | Digital input |
-| D10 | ESP32 GPIO17 / TX2 | SoftwareSerial RX; 3.3 V ESP32 output is accepted by Uno |
-| D11 | ESP32 GPIO16 / RX2 | SoftwareSerial TX **through a 5 V-to-3.3 V divider** |
+| D10 | HC-05 TXD | SoftwareSerial RX; direct connection is normally safe |
+| D11 | HC-05 RXD | SoftwareSerial TX **through a 5 V-to-3.3 V divider** |
 | D12 | DHT11 OUT | Digital bidirectional data |
 | D13 | Headlight driver | Digital output |
 | A0 | MQ-135 AO | Analog input |
@@ -32,10 +32,10 @@ has been electrically checked and tested in a controlled area.
 | A4 | MPU6050 SDA | I2C |
 | A5 | MPU6050 SCL | I2C |
 
-There are no pin conflicts. The ESP32 UART bridge uses D10/D11, Timer 2 PWM is
-used on D3, and the MPU6050 owns A4/A5. The Uno has no pin left for a separate
-warning LED, so A3 is the one alarm output. The analog light sensor uses A2,
-while the headlight driver was moved to D13.
+There are no pin conflicts. SoftwareSerial uses D10/D11, Timer 2 PWM is used on
+D3, and the MPU6050 owns A4/A5. The Uno has no pin left for a separate warning
+LED, so A3 is the one alarm output. The analog light sensor uses A2, while the
+headlight driver was moved to D13.
 
 ## Project tree
 
@@ -48,23 +48,20 @@ RescueRover/
 │   ├── pins.hpp
 │   └── sensors.hpp
 └── src/
-    ├── esp32_bridge.cpp
     ├── main.cpp
     └── sensors.cpp
 ```
 
-`main.cpp` contains the Uno flow: commands, motors, safety checks, outputs, and
-telemetry. `sensors.cpp` contains the sensor-library adapters, filtering, and
-scheduled reads. `esp32_bridge.cpp` is separate firmware that forwards bytes
-between Bluetooth Classic SPP and the ESP32 UART2 port.
+`main.cpp` contains the normal Arduino flow: commands, motors, safety checks,
+outputs, and telemetry. `sensors.cpp` contains the sensor-library adapters,
+filtering, and scheduled reads.
 
 ## Required libraries
 
 PlatformIO installs the sensor libraries listed in `platformio.ini`: DHT sensor
 library 1.4.7, Adafruit MPU6050 2.2.9, Adafruit Unified Sensor 1.1.15, and
-NewPing 1.9.7. `Wire` and `SoftwareSerial` come with the Arduino AVR framework;
-`BluetoothSerial` comes with the ESP32 Arduino framework. The Uno application
-still owns filtering, scheduling, safety checks, and telemetry.
+NewPing 1.9.7. `Wire` and `SoftwareSerial` come with the Arduino AVR framework.
+The application still owns filtering, scheduling, safety checks, and telemetry.
 
 The final checked build uses:
 
@@ -95,32 +92,22 @@ ground. It holds the bridge disabled while the Uno is resetting and D3 has not
 yet become an output. Similar gate/base pulldowns are recommended on transistor
 drivers for the headlights and buzzer.
 
-### ESP32 Bluetooth bridge
+### HC-05 / TS-040
 
-Use an original ESP32 board such as an ESP32 DevKit V1. The bridge uses Classic
-Bluetooth SPP, not BLE; ESP32-C3 and ESP32-S3 boards do not provide the required
-Classic Bluetooth SPP capability.
-
-Connect ESP32 GPIO17 (TX2) directly to Uno D10. Uno D11 is 5 V logic and **must
-not directly drive ESP32 GPIO16 (RX2)**. Use a divider, for example:
+Connect HC-05 TXD to Uno D10. Uno D11 is 5 V logic and **must not directly drive
+HC-05 RXD**. Use a divider, for example:
 
 ```text
-Uno D11 ---- 1 kΩ ----+---- ESP32 GPIO16 / RX2
+Uno D11 ---- 1 kΩ ----+---- HC-05 RXD
                       |
                      2 kΩ
                       |
                      GND
 ```
 
-This produces about 3.3 V at RX2. Connect Uno GND and ESP32 GND. Power the ESP32
-from USB or a stable, adequately rated 5 V input; do not power it from the Uno
-3.3 V pin. The Uno-to-ESP32 link uses 9600 baud and can be changed with
-`ESP32_LINK_BAUD_RATE` in the Uno firmware and `ROVER_UART_BAUD_RATE` in the
-bridge firmware. Both values must match.
-
-For rollback, disconnect the ESP32 and reconnect the HC-05 TXD/RXD to D10/D11
-with the same divider on D11. The unchanged 9600-baud byte protocol means the
-Uno firmware does not need to be reverted.
+This produces about 3.3 V at RXD. Connect VCC and GND according to the TS-040
+breakout markings. STATE and EN are not used. The default data-mode speed is
+9600 baud and can be changed with `BT_BAUD_RATE`.
 
 ### Sensors and outputs
 
@@ -204,14 +191,13 @@ WASD-style backward command is intentionally not accepted because it would make
 
 A movement command authorizes motion for only 1000 ms. Repeat the direction or
 send `P` before the timeout. Loss of traffic produces `ALERT:COMMAND_TIMEOUT`
-and stops the motors. No ESP32 connection-status pin is required.
+and stops the motors. The HC-05 STATE pin is not required.
 
-Pair the Bluetooth Classic device named `RescueRover`. On macOS, locate its
-serial device with `ls /dev/tty.*` and connect with a serial terminal at 9600
-baud. One simple option is:
+On macOS, pair the HC-05, locate its serial device with `ls /dev/tty.*`, and
+connect with a serial terminal at 9600 baud. One simple option is:
 
 ```sh
-screen /dev/tty.YOUR_RESCUEROVER_DEVICE 9600
+screen /dev/tty.YOUR_HC05_DEVICE 9600
 ```
 
 In `screen`, press Control-A then Control-Backslash to exit. The exact device
@@ -268,16 +254,14 @@ ALERT:COMMAND_TIMEOUT
 ## Build, upload, and terminal connection
 
 1. Open this folder in VS Code with the PlatformIO extension installed.
-2. Build the Uno firmware with `pio run -e uno`.
-3. Connect the Uno and upload it with `pio run -e uno -t upload`.
-4. Build the ESP32 bridge with `pio run -e esp32_bridge`, connect the ESP32 by
-   USB, and upload it with `pio run -e esp32_bridge -t upload`.
-5. Pair the `RescueRover` Bluetooth device and connect to it from a terminal at
-   9600 baud as described in the Bluetooth protocol section.
+2. Run **PlatformIO: Build**, or from the project terminal run `pio run`.
+3. Connect the Uno and run **PlatformIO: Upload**, or `pio run -t upload`.
+4. Pair the HC-05 with the computer and connect to it from a terminal at 9600
+   baud as described in the Bluetooth protocol section.
 
-No upload port is hard-coded; PlatformIO can discover each connected board. The
-Uno does not print telemetry to USB; all runtime information goes through the
-ESP32 to the Bluetooth terminal.
+No upload port is hard-coded; PlatformIO can discover the connected Uno. The
+firmware does not print telemetry to USB; all runtime information goes to the
+Bluetooth terminal.
 
 ## Controlled test procedure
 
@@ -288,8 +272,8 @@ supply off while checking sensors. Watch the Bluetooth terminal throughout.
    motor stage, and send repeated `F`, `B`, `L`, `R`, and `S`. Confirm both sides
    and reverse a side in configuration if required. Test speed digits at low
    settings first.
-2. **Bluetooth:** pair `RescueRover`, confirm `RESCUE_ROVER:READY`, send `?`,
-   then verify each command and all telemetry from the Bluetooth terminal.
+2. **Bluetooth:** confirm `RESCUE_ROVER:READY`, send `?`, then verify each command
+   and all telemetry from the Mac terminal.
 3. **Command timeout:** send `F` once and no heartbeat. Verify stopping at about
    one second and `ALERT:COMMAND_TIMEOUT`.
 4. **Ultrasonic stop:** at low wheel speed, move a flat target from more than 30
