@@ -15,12 +15,6 @@ enum Motion : uint8_t {
     MOTION_RIGHT
 };
 
-enum LightMode : uint8_t {
-    LIGHT_AUTO,
-    LIGHT_ON,
-    LIGHT_OFF
-};
-
 enum ScanPhase : uint8_t {
     SCAN_OFF,
     SCAN_SETTLING,
@@ -28,10 +22,8 @@ enum ScanPhase : uint8_t {
 };
 
 Motion motion = MOTION_STOP;
-LightMode lightMode = AUTO_LIGHT_MODE ? LIGHT_AUTO : LIGHT_OFF;
 ScanPhase scanPhase = SCAN_OFF;
 
-uint8_t motorSpeed = DEFAULT_MOTOR_SPEED;
 uint32_t bootMs = 0;
 uint32_t lastControlMs = 0;
 uint32_t lastTelemetryMs = 0;
@@ -125,7 +117,7 @@ void runMotors(Motion newMotion, int8_t left, int8_t right) {
                    left, MOTOR_LEFT_REVERSED != 0);
     writeMotorSide(Pins::MOTOR_RIGHT_IN1, Pins::MOTOR_RIGHT_IN2,
                    right, MOTOR_RIGHT_REVERSED != 0);
-    analogWrite(Pins::MOTOR_ENABLE_PWM, motorSpeed);
+    analogWrite(Pins::MOTOR_ENABLE_PWM, DEFAULT_MOTOR_SPEED);
     motion = newMotion;
 }
 
@@ -179,13 +171,6 @@ void processBluetooth(uint32_t now) {
         command -= 'a' - 'A';
     }
 
-    if (command >= '0' && command <= '9') {
-        uint8_t level = command - '0';
-        motorSpeed = MIN_MOTOR_SPEED +
-                     ((uint16_t)(255 - MIN_MOTOR_SPEED) * level) / 9;
-        return;
-    }
-
     switch (command) {
         case 'W':
             moveRover(MOTION_FORWARD, now);
@@ -226,17 +211,8 @@ void processBluetooth(uint32_t now) {
         case 'P':
             lastControlMs = now;
             break;
-        case 'H':
-            lightMode = LIGHT_ON;
-            break;
-        case 'J':
-            lightMode = LIGHT_OFF;
-            break;
-        case 'U':
-            lightMode = LIGHT_AUTO;
-            break;
         case '?':
-            bluetooth.println(F("CMD:W,S,A,D,SPACE,T,X,C,P,H,J,U,0-9,?"));
+            bluetooth.println(F("CMD:W,S,A,D,SPACE,T,X,C,P,?"));
             break;
     }
 }
@@ -462,8 +438,7 @@ void updateScan(uint32_t now) {
 
 void updateOutputs(uint32_t now) {
     const SensorData& data = sensorsGetData();
-    bool headlightsOn = lightMode == LIGHT_ON ||
-                        (lightMode == LIGHT_AUTO && data.dark);
+    bool headlightsOn = data.dark;
     writeOutput(Pins::HEADLIGHT, headlightsOn, HEADLIGHT_ACTIVE_HIGH);
 
     bool buzzerOn = false;

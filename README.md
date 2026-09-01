@@ -135,8 +135,9 @@ breakout markings. STATE is connected to D0; EN is not used. The default data-mo
 
 ## Configuration and calibration
 
-All editable thresholds, polarities, periods, speeds, and feature choices are
-in `include/config.hpp`; all pins are in `include/pins.hpp`.
+All editable thresholds, polarities, periods, and feature choices are in
+`include/config.hpp`; all pins are in `include/pins.hpp`. Motor speed remains
+the fixed `DEFAULT_MOTOR_SPEED` value.
 
 The supplied thresholds are starting values only:
 
@@ -187,10 +188,6 @@ ignored.
 | `X` | Immediate latched emergency stop |
 | `C` | Clear the latch only after critical conditions are gone |
 | `P` | Heartbeat; refresh the movement timeout |
-| `H` | Force headlights on |
-| `J` | Force headlights off |
-| `U` | Return headlights to automatic mode |
-| `0`..`9` | Select speed from minimum to full PWM |
 | `?` | Print compact command help |
 
 Movement uses only WASD. The old `F`, `B`, `L`, and `R` movement commands are
@@ -200,7 +197,8 @@ A movement command authorizes motion for only 1000 ms. Repeat the direction or
 send `P` before the timeout. Loss of traffic produces `ALERT:COMMAND_TIMEOUT`
 and stops the motors. The firmware also stops and rejects movement whenever the
 HC-05 STATE input is LOW. If the exact module uses inverted STATE logic, change
-`BT_STATE_ACTIVE_HIGH` in `include/config.hpp`.
+`BT_STATE_ACTIVE_HIGH` in `include/config.hpp`. Headlights are always controlled
+automatically by the light sensor; there are no manual headlight commands.
 
 On macOS, pair the HC-05, locate its serial device with `ls /dev/tty.*`, and
 connect with a serial terminal at 9600 baud. One simple option is:
@@ -307,7 +305,7 @@ supply off while checking sensors. Watch the Bluetooth terminal throughout.
    `C` only after returning below critical.
 10. **Automatic headlights:** cover/uncover the LDR. Verify `LRAW`, `LIGHT`, and
     the lamps. If the analog direction is reversed, change
-    `LIGHT_ANALOG_DARK_BELOW`; also test `H`, `J`, and `U`.
+    `LIGHT_ANALOG_DARK_BELOW`.
 11. **Emergency stop:** while wheels are raised and turning slowly, send `X`.
     Verify immediate stop, rejected movement, `EMERGENCY`, and safe clearing by
     `C`.
