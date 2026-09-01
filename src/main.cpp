@@ -159,9 +159,9 @@ void moveRover(Motion requested, uint32_t now) {
     } else if (requested == MOTION_BACKWARD) {
         runMotors(requested, -1, -1);
     } else if (requested == MOTION_LEFT) {
-        runMotors(requested, -1, 1);
-    } else {
         runMotors(requested, 1, -1);
+    } else {
+        runMotors(requested, -1, 1);
     }
 
     scanPhase = SCAN_OFF;
