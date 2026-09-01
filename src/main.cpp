@@ -284,7 +284,7 @@ void updateSafety(uint32_t now) {
     blockForward = blockAllMotion || obstacleCritical ||
                    (ultrasonicFault && ULTRASONIC_FAILSAFE_BLOCK_FORWARD);
     warningActive = blockAllMotion || obstacleWarning || gasWarning ||
-                    temperatureWarning || tiltWarning || ultrasonicFault;
+                    temperatureWarning || tiltWarning;
 
     if (startupActive(now) || !bluetoothConnected() || blockAllMotion ||
         (blockForward && motion == MOTION_FORWARD)) {
