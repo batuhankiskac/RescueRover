@@ -12,7 +12,8 @@ has been electrically checked and tested in a controlled area.
 
 | Uno pin | Connection | Direction / note |
 |---|---|---|
-| D0 / D1 | USB / upload | Not used by the firmware; kept free for uploading |
+| D0 | HC-05 STATE | Digital input; HIGH means connected |
+| D1 | USB / upload TX | Kept free for uploading |
 | D2 | HC-SR501 OUT | Digital input |
 | D3 | L298N ENA **and** ENB | Shared PWM output; remove both EN jumpers |
 | D4 | L298N IN1 | Left motor direction |
@@ -35,7 +36,8 @@ has been electrically checked and tested in a controlled area.
 There are no pin conflicts. SoftwareSerial uses D10/D11, Timer 2 PWM is used on
 D3, and the MPU6050 owns A4/A5. The Uno has no pin left for a separate warning
 LED, so A3 is the one alarm output. The analog light sensor uses A2, while the
-headlight driver was moved to D13.
+headlight driver was moved to D13. D0 is reserved for the HC-05 STATE input;
+D1 remains available for the USB upload/serial TX function.
 
 ## Project tree
 
@@ -89,13 +91,16 @@ change `MOTOR_LEFT_REVERSED` / `MOTOR_RIGHT_REVERSED` in `config.hpp`.
 
 For a real safety build, add a 10 kΩ pulldown from the joined ENA/ENB node to
 ground. It holds the bridge disabled while the Uno is resetting and D3 has not
-yet become an output. Similar gate/base pulldowns are recommended on transistor
-drivers for the headlights and buzzer.
+yet become an output. The firmware also preloads all motor outputs LOW and
+rejects motion commands during its first two seconds, but software cannot
+control pins while the Uno is still in reset. Similar gate/base pulldowns are
+recommended on transistor drivers for the headlights and buzzer.
 
 ### HC-05 / TS-040
 
-Connect HC-05 TXD to Uno D10. Uno D11 is 5 V logic and **must not directly drive
-HC-05 RXD**. Use a divider, for example:
+Connect HC-05 TXD to Uno D10 and HC-05 STATE to Uno D0. STATE is HIGH while the
+module is connected and LOW while it is disconnected. Uno D11 is 5 V logic and
+**must not directly drive HC-05 RXD**. Use a divider, for example:
 
 ```text
 Uno D11 ---- 1 kΩ ----+---- HC-05 RXD
@@ -106,7 +111,7 @@ Uno D11 ---- 1 kΩ ----+---- HC-05 RXD
 ```
 
 This produces about 3.3 V at RXD. Connect VCC and GND according to the TS-040
-breakout markings. STATE and EN are not used. The default data-mode speed is
+breakout markings. STATE is connected to D0; EN is not used. The default data-mode speed is
 9600 baud and can be changed with `BT_BAUD_RATE`.
 
 ### Sensors and outputs
@@ -191,7 +196,9 @@ WASD-style backward command is intentionally not accepted because it would make
 
 A movement command authorizes motion for only 1000 ms. Repeat the direction or
 send `P` before the timeout. Loss of traffic produces `ALERT:COMMAND_TIMEOUT`
-and stops the motors. The HC-05 STATE pin is not required.
+and stops the motors. The firmware also stops and rejects movement whenever the
+HC-05 STATE input is LOW. If the exact module uses inverted STATE logic, change
+`BT_STATE_ACTIVE_HIGH` in `include/config.hpp`.
 
 On macOS, pair the HC-05, locate its serial device with `ls /dev/tty.*`, and
 connect with a serial terminal at 9600 baud. One simple option is:

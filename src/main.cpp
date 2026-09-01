@@ -70,6 +70,15 @@ bool before(uint32_t now, uint32_t end) {
     return (int32_t)(now - end) < 0;
 }
 
+bool startupActive(uint32_t now) {
+    return !elapsed(now, bootMs, STARTUP_DURATION_MS);
+}
+
+bool bluetoothConnected() {
+    return digitalRead(Pins::BT_STATE) ==
+           (BT_STATE_ACTIVE_HIGH ? HIGH : LOW);
+}
+
 void writeOutput(uint8_t pin, bool on, bool activeHigh) {
     digitalWrite(pin, on == activeHigh ? HIGH : LOW);
 }
@@ -124,6 +133,16 @@ void moveRover(Motion requested, uint32_t now) {
         stopMotors();
         scanPhase = SCAN_OFF;
         lastControlMs = now;
+        return;
+    }
+
+    if (startupActive(now)) {
+        stopMotors();
+        return;
+    }
+
+    if (!bluetoothConnected()) {
+        stopMotors();
         return;
     }
 
@@ -291,7 +310,8 @@ void updateSafety(uint32_t now) {
     warningActive = blockAllMotion || obstacleWarning || gasWarning ||
                     temperatureWarning || tiltWarning || ultrasonicFault;
 
-    if (blockAllMotion || (blockForward && motion == MOTION_FORWARD)) {
+    if (startupActive(now) || !bluetoothConnected() || blockAllMotion ||
+        (blockForward && motion == MOTION_FORWARD)) {
         stopMotors();
     }
 
@@ -458,14 +478,21 @@ void updateOutputs(uint32_t now) {
 }
 
 void setup() {
-    bluetooth.begin(BT_BAUD_RATE);
-    bluetooth.listen();
-
+    digitalWrite(Pins::MOTOR_ENABLE_PWM, LOW);
+    digitalWrite(Pins::MOTOR_LEFT_IN1, LOW);
+    digitalWrite(Pins::MOTOR_LEFT_IN2, LOW);
+    digitalWrite(Pins::MOTOR_RIGHT_IN1, LOW);
+    digitalWrite(Pins::MOTOR_RIGHT_IN2, LOW);
     pinMode(Pins::MOTOR_ENABLE_PWM, OUTPUT);
     pinMode(Pins::MOTOR_LEFT_IN1, OUTPUT);
     pinMode(Pins::MOTOR_LEFT_IN2, OUTPUT);
     pinMode(Pins::MOTOR_RIGHT_IN1, OUTPUT);
     pinMode(Pins::MOTOR_RIGHT_IN2, OUTPUT);
+    pinMode(Pins::BT_STATE, INPUT);
+
+    bluetooth.begin(BT_BAUD_RATE);
+    bluetooth.listen();
+
     pinMode(Pins::HEADLIGHT, OUTPUT);
     pinMode(Pins::ALARM, OUTPUT);
     stopMotors();

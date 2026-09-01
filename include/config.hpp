@@ -1,6 +1,7 @@
 #pragma once
 
 #define BT_BAUD_RATE 9600UL
+#define BT_STATE_ACTIVE_HIGH 1
 
 #define STARTUP_DURATION_MS 2000UL
 #define COMMAND_TIMEOUT_MS 1000UL

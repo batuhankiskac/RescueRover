@@ -22,6 +22,7 @@ constexpr uint8_t ULTRASONIC_ECHO = 9;
 
 constexpr uint8_t BT_RX = 10;
 constexpr uint8_t BT_TX = 11;
+constexpr uint8_t BT_STATE = 0;
 
 constexpr uint8_t DHT11_DATA = 12;
 }
