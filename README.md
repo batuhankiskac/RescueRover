@@ -67,7 +67,7 @@ The application still owns filtering, scheduling, safety checks, and telemetry.
 
 The final checked build uses:
 
-- Flash: 20,434 bytes of 32,256 bytes (63.3%)
+- Flash: 20,682 bytes of 32,256 bytes (64.1%)
 - Static SRAM: 666 bytes of 2,048 bytes (32.5%)
 
 That leaves 1,382 bytes for stack and runtime use. The MPU6050 library creates
@@ -175,11 +175,11 @@ ignored.
 
 | Command | Action |
 |---|---|
-| `F` or `W` | Forward |
-| `B` | Backward |
-| `L` or `A` | Pivot left |
-| `R` or `D` | Pivot right |
-| `S` | Stop |
+| `W` | Forward |
+| `S` | Backward |
+| `A` | Pivot left |
+| `D` | Pivot right |
+| `Space` | Stop |
 | `T` | Start scan |
 | `X` | Immediate latched emergency stop |
 | `C` | Clear the latch only after critical conditions are gone |
@@ -190,9 +190,8 @@ ignored.
 | `0`..`9` | Select speed from minimum to full PWM |
 | `?` | Print compact command help |
 
-`S` always means stop, preserving the requested F/B/L/R/S safety protocol. A
-WASD-style backward command is intentionally not accepted because it would make
-`S` ambiguous.
+Movement uses only WASD. The old `F`, `B`, `L`, and `R` movement commands are
+ignored. Press Space for a normal stop or `X` for the latched emergency stop.
 
 A movement command authorizes motion for only 1000 ms. Repeat the direction or
 send `P` before the timeout. Loss of traffic produces `ALERT:COMMAND_TIMEOUT`
@@ -276,16 +275,15 @@ Start with the rover raised so its wheels cannot touch anything. Keep the motor
 supply off while checking sensors. Watch the Bluetooth terminal throughout.
 
 1. **Motor directions:** connect a working HC-SR04 with clear space, power the
-   motor stage, and send repeated `F`, `B`, `L`, `R`, and `S`. Confirm both sides
-   and reverse a side in configuration if required. Test speed digits at low
-   settings first.
+   motor stage, and send repeated `W`, `S`, `A`, and `D`; press Space to stop.
+   Confirm both sides and test speed digits at low settings first.
 2. **Bluetooth:** confirm `RESCUE_ROVER:READY`, send `?`, then verify each command
    and all telemetry from the Mac terminal.
-3. **Command timeout:** send `F` once and no heartbeat. Verify stopping at about
+3. **Command timeout:** send `W` once and no heartbeat. Verify stopping at about
    one second and `ALERT:COMMAND_TIMEOUT`.
 4. **Ultrasonic stop:** at low wheel speed, move a flat target from more than 30
    cm to less than 10 cm. Verify warning, stop, and forward rejection; verify
-   `B` can escape. Disconnect ECHO and verify forward is fail-safe blocked.
+   `S` can escape. Disconnect ECHO and verify forward is fail-safe blocked.
 5. **DHT11:** breathe near (not onto) the sensor or move it between environments.
    Verify `T`/`H` update about every two seconds and failures show `NA`.
 6. **MQ-135:** after warm-up, observe clean-air raw/filtered values. For a bench

@@ -186,22 +186,19 @@ void processBluetooth(uint32_t now) {
     }
 
     switch (command) {
-        case 'F':
         case 'W':
             moveRover(MOTION_FORWARD, now);
             break;
-        case 'B':
+        case 'S':
             moveRover(MOTION_BACKWARD, now);
             break;
-        case 'L':
         case 'A':
             moveRover(MOTION_LEFT, now);
             break;
-        case 'R':
         case 'D':
             moveRover(MOTION_RIGHT, now);
             break;
-        case 'S':
+        case ' ':
             moveRover(MOTION_STOP, now);
             break;
         case 'T':
@@ -238,7 +235,7 @@ void processBluetooth(uint32_t now) {
             lightMode = LIGHT_AUTO;
             break;
         case '?':
-            bluetooth.println(F("CMD:F/W,B,L/A,R/D,S,T,X,C,P,H,J,U,0-9,?"));
+            bluetooth.println(F("CMD:W,S,A,D,SPACE,T,X,C,P,H,J,U,0-9,?"));
             break;
     }
 }
