@@ -30,6 +30,7 @@ uint16_t distanceSamples[3] = {0, 0, 0};
 uint8_t distanceSampleCount = 0;
 uint8_t distanceSampleIndex = 0;
 uint8_t ultrasonicFailures = 0;
+uint8_t distanceValidReadings = 0;
 bool gasFilterInitialized = false;
 bool mpuFilterInitialized = false;
 uint8_t mpuAddress = MPU6050_ADDRESS;
@@ -72,6 +73,10 @@ void readDistance() {
         if (ultrasonicFailures >= ULTRASONIC_FAILURE_LIMIT) {
             data.distanceValid = false;
         }
+        if (distanceValidReadings < ULTRASONIC_VALID_READINGS_REQUIRED) {
+            distanceValidReadings = 0;
+            data.distanceValid = false;
+        }
         return;
     }
 
@@ -84,7 +89,11 @@ void readDistance() {
 
     const uint16_t filtered = medianDistance();
     data.distanceCm = centimeters < filtered ? centimeters : filtered;
-    data.distanceValid = true;
+    if (distanceValidReadings < 255U) {
+        ++distanceValidReadings;
+    }
+    data.distanceValid =
+        distanceValidReadings >= ULTRASONIC_VALID_READINGS_REQUIRED;
 }
 
 void updateGasState() {
@@ -246,6 +255,8 @@ void sensorsBegin() {
     }
     data.mpuValid = mpuReady;
     data.gasState = GAS_WARMING;
+    distanceValidReadings = 0;
+    data.distanceValid = false;
 
     sensorStartMs = millis();
     lastMpuMs = sensorStartMs - MPU_PERIOD_MS;

@@ -52,6 +52,7 @@ bool temperatureCritical = false;
 bool tiltWarning = false;
 bool tiltCritical = false;
 bool ultrasonicFault = true;
+bool ultrasonicReady = false;
 
 bool oldObstacleWarning = false;
 bool oldGasWarning = false;
@@ -242,7 +243,10 @@ void processBluetooth(uint32_t now) {
 
 void updateSafety(uint32_t now) {
     const SensorData& data = sensorsGetData();
-    ultrasonicFault = !data.distanceValid;
+    if (data.distanceValid) {
+        ultrasonicReady = true;
+    }
+    ultrasonicFault = !ultrasonicReady;
     obstacleWarning = data.distanceValid && data.distanceCm <= OBSTACLE_WARNING_CM;
     bool obstacleCritical = data.distanceValid && data.distanceCm <= OBSTACLE_CRITICAL_CM;
     gasWarning = data.gasState == GAS_WARNING || data.gasState == GAS_CRITICAL;
@@ -289,7 +293,6 @@ void updateSafety(uint32_t now) {
         sendAlert(F("ALERT:ULTRASONIC_FAULT"));
         newAlert = true;
     }
-
     oldObstacleWarning = obstacleWarning;
     oldGasWarning = gasWarning;
     oldGasCritical = gasCritical;

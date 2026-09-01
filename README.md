@@ -67,10 +67,10 @@ The application still owns filtering, scheduling, safety checks, and telemetry.
 
 The final checked build uses:
 
-- Flash: 20,682 bytes of 32,256 bytes (64.1%)
-- Static SRAM: 666 bytes of 2,048 bytes (32.5%)
+- Flash: 20,744 bytes of 32,256 bytes (64.3%)
+- Static SRAM: 668 bytes of 2,048 bytes (32.6%)
 
-That leaves 1,382 bytes for stack and runtime use. The MPU6050 library creates
+That leaves 1,380 bytes for stack and runtime use. The MPU6050 library creates
 its I2C adapter during setup; no application-level allocation occurs in the
 main loop.
 
@@ -141,8 +141,11 @@ in `include/config.hpp`; all pins are in `include/pins.hpp`.
 The supplied thresholds are starting values only:
 
 - Measure clear-path HC-SR04 behavior and choose obstacle distances for the
-  actual rover speed and stopping distance. Invalid readings block forward by
-  default. A new close reading bypasses the three-sample median delay.
+  actual rover speed and stopping distance. At startup, three valid readings
+  are required before forward motion is allowed. After that validation, no echo
+  is treated as an open path beyond the configured range; `D:NA` remains visible
+  without an audible warning. A new close reading bypasses the three-sample
+  median delay.
 - Log MQ-135 raw and filtered values in clean air after stabilization. Set
   `GAS_BASELINE_ADC`, `GAS_WARNING_ABOVE_BASELINE`, and
   `GAS_CRITICAL_ABOVE_BASELINE`. The development warm-up is 60 seconds, but a
@@ -225,7 +228,9 @@ movement command is accepted:
 
 - A critical front obstacle stops forward motion and rejects new forward
   commands. Backward/pivot escape remains available.
-- Missing/invalid ultrasonic data blocks forward motion by default.
+- Missing/invalid ultrasonic data blocks forward motion until the sensor has
+  produced three valid startup readings. After validation, no echo is reported
+  as `D:NA` and treated as open path beyond the configured range.
 - Critical gas or critical tilt stops and blocks every motor command while the
   condition exists.
 - A rollover angle latches the emergency state.
@@ -283,7 +288,8 @@ supply off while checking sensors. Watch the Bluetooth terminal throughout.
    one second and `ALERT:COMMAND_TIMEOUT`.
 4. **Ultrasonic stop:** at low wheel speed, move a flat target from more than 30
    cm to less than 10 cm. Verify warning, stop, and forward rejection; verify
-   `S` can escape. Disconnect ECHO and verify forward is fail-safe blocked.
+   `S` can escape. After startup validation, disconnect ECHO and verify `D:NA`
+   without a buzzer warning while forward motion remains available.
 5. **DHT11:** breathe near (not onto) the sensor or move it between environments.
    Verify `T`/`H` update about every two seconds and failures show `NA`.
 6. **MQ-135:** after warm-up, observe clean-air raw/filtered values. For a bench
