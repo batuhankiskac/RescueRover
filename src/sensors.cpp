@@ -31,6 +31,7 @@ uint8_t distanceSampleCount = 0;
 uint8_t distanceSampleIndex = 0;
 uint8_t ultrasonicFailures = 0;
 uint8_t distanceValidReadings = 0;
+uint8_t temperatureTransitionReadings = 0;
 bool gasFilterInitialized = false;
 bool mpuFilterInitialized = false;
 uint8_t mpuAddress = MPU6050_ADDRESS;
@@ -130,10 +131,22 @@ void readGas() {
 void readDht11() {
     data.dhtValid = dht.read();
     if (!data.dhtValid) {
+        // Break consecutive confirmation without clearing an active lock.
+        temperatureTransitionReadings = 0;
         return;
     }
     data.temperatureDeciC = static_cast<int16_t>(dht.readTemperature() * 10.0F);
     data.humidityDeciPct = static_cast<uint16_t>(dht.readHumidity() * 10.0F);
+
+    const bool criticalReading =
+        data.temperatureDeciC >= TEMP_CRITICAL_C * 10;
+    if (criticalReading == data.temperatureCritical) {
+        temperatureTransitionReadings = 0;
+    } else if (++temperatureTransitionReadings >=
+               TEMP_CRITICAL_READINGS_REQUIRED) {
+        data.temperatureCritical = criticalReading;
+        temperatureTransitionReadings = 0;
+    }
 }
 
 void readMpu() {

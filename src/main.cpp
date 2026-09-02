@@ -21,6 +21,20 @@ enum ScanPhase : uint8_t {
     SCAN_SOUND
 };
 
+enum SafetyLevel : uint8_t {
+    LEVEL_NORMAL,
+    LEVEL_WARNING,
+    LEVEL_ALERT,
+    LEVEL_CRITICAL
+};
+
+struct HazardLevels {
+    SafetyLevel obstacle;
+    SafetyLevel gas;
+    SafetyLevel temperature;
+    SafetyLevel tilt;
+};
+
 Motion motion = MOTION_STOP;
 ScanPhase scanPhase = SCAN_OFF;
 
@@ -28,39 +42,25 @@ uint32_t bootMs = 0;
 uint32_t lastControlMs = 0;
 uint32_t lastTelemetryMs = 0;
 uint32_t scanStartedMs = 0;
-uint32_t alarmUntilMs = 0;
+uint32_t criticalBeepStartedMs = 0;
+bool criticalBeepActive = false;
+SafetyLevel pendingEventLevel = LEVEL_NORMAL;
+const __FlashStringHelper* pendingEventMessage = NULL;
 
 bool manualEmergency = false;
 bool rolloverEmergency = false;
 bool blockAllMotion = false;
 bool blockForward = true;
-bool warningActive = true;
+SafetyLevel safetyLevel = LEVEL_NORMAL;
 
-bool obstacleWarning = false;
-bool gasWarning = false;
-bool gasCritical = false;
-bool temperatureWarning = false;
-bool temperatureCritical = false;
-bool tiltWarning = false;
-bool tiltCritical = false;
-bool ultrasonicFault = true;
+HazardLevels hazards = {};
+HazardLevels previousHazards = {};
 bool ultrasonicReady = false;
-
-bool oldObstacleWarning = false;
-bool oldGasWarning = false;
-bool oldGasCritical = false;
-bool oldTemperatureWarning = false;
-bool oldTemperatureCritical = false;
-bool oldTiltWarning = false;
-bool oldTiltCritical = false;
-bool oldUltrasonicFault = false;
+bool collisionCriticalAnnounced = false;
+bool oldUltrasonicAlert = false;
 
 bool elapsed(uint32_t now, uint32_t since, uint32_t period) {
     return (uint32_t)(now - since) >= period;
-}
-
-bool before(uint32_t now, uint32_t end) {
-    return (int32_t)(now - end) < 0;
 }
 
 bool startupActive(uint32_t now) {
@@ -76,15 +76,43 @@ void writeOutput(uint8_t pin, bool on, bool activeHigh) {
     digitalWrite(pin, on == activeHigh ? HIGH : LOW);
 }
 
-void pulseAlarm(uint32_t now, uint16_t duration) {
-    uint32_t requestedEnd = now + duration;
-    if (!before(requestedEnd, alarmUntilMs)) {
-        alarmUntilMs = requestedEnd;
+void queueEvent(SafetyLevel level, const __FlashStringHelper* message) {
+    if (pendingEventMessage == NULL || level > pendingEventLevel) {
+        pendingEventLevel = level;
+        pendingEventMessage = message;
     }
 }
 
-void sendAlert(const __FlashStringHelper* message) {
-    bluetooth.println(message);
+void flushEvent(uint32_t now) {
+    if (pendingEventMessage == NULL) {
+        return;
+    }
+    bool startBeep = pendingEventLevel == LEVEL_CRITICAL &&
+                     (!criticalBeepActive ||
+                      elapsed(now, criticalBeepStartedMs, CRITICAL_BEEP_MS));
+    bluetooth.println(pendingEventMessage);
+    if (startBeep) {
+        criticalBeepActive = true;
+        criticalBeepStartedMs = millis();
+    }
+    pendingEventLevel = LEVEL_NORMAL;
+    pendingEventMessage = NULL;
+}
+
+void queueHazardRise(SafetyLevel current, SafetyLevel previous,
+                     const __FlashStringHelper* warningMessage,
+                     const __FlashStringHelper* criticalMessage) {
+    if (current > previous) {
+        queueEvent(current, current == LEVEL_CRITICAL ? criticalMessage : warningMessage);
+    }
+}
+
+void signalCollisionRisk() {
+    if (collisionCriticalAnnounced) {
+        return;
+    }
+    collisionCriticalAnnounced = true;
+    queueEvent(LEVEL_CRITICAL, F("CRITICAL:COLLISION_RISK"));
 }
 
 void writeMotorSide(uint8_t pin1, uint8_t pin2, int8_t direction, bool reversed) {
@@ -129,21 +157,22 @@ void moveRover(Motion requested, uint32_t now) {
         return;
     }
 
-    if (startupActive(now)) {
+    if (startupActive(now) || !bluetoothConnected()) {
         stopMotors();
         return;
     }
 
-    if (!bluetoothConnected()) {
-        stopMotors();
+    if (blockAllMotion) {
+        queueEvent(LEVEL_ALERT, F("ALERT:MOTION_BLOCKED"));
         return;
     }
 
-    if (blockAllMotion || (blockForward && requested == MOTION_FORWARD)) {
-        sendAlert(requested == MOTION_FORWARD
-                      ? F("ALERT:FORWARD_BLOCKED")
-                      : F("ALERT:MOTION_BLOCKED"));
-        pulseAlarm(now, ALERT_PULSE_MS);
+    if (blockForward && requested == MOTION_FORWARD) {
+        if (hazards.obstacle == LEVEL_ALERT && !collisionCriticalAnnounced) {
+            signalCollisionRisk();
+        } else if (hazards.obstacle != LEVEL_ALERT) {
+            queueEvent(LEVEL_ALERT, F("ALERT:FORWARD_BLOCKED"));
+        }
         return;
     }
 
@@ -195,17 +224,20 @@ void processBluetooth(uint32_t now) {
         case 'X':
             stopMotors();
             scanPhase = SCAN_OFF;
-            manualEmergency = true;
-            sendAlert(F("ALERT:EMERGENCY_STOP"));
+            if (!manualEmergency) {
+                manualEmergency = true;
+                queueEvent(LEVEL_CRITICAL, F("CRITICAL:EMERGENCY_STOP"));
+            }
             break;
         case 'C':
-            if (gasCritical || tiltCritical ||
-                (temperatureCritical && TEMP_CRITICAL_STOPS_MOTORS)) {
-                sendAlert(F("ALERT:CLEAR_REJECTED"));
+            if (hazards.gas == LEVEL_CRITICAL || hazards.tilt == LEVEL_CRITICAL ||
+                hazards.temperature == LEVEL_CRITICAL ||
+                (rolloverEmergency && !sensorsGetData().mpuValid)) {
+                queueEvent(LEVEL_ALERT, F("ALERT:CLEAR_REJECTED"));
             } else {
                 manualEmergency = false;
                 rolloverEmergency = false;
-                sendAlert(F("ALERT:EMERGENCY_CLEARED"));
+                bluetooth.println(F("STATUS:EMERGENCY_CLEARED"));
             }
             break;
         case 'P':
@@ -222,69 +254,78 @@ void updateSafety(uint32_t now) {
     if (data.distanceValid) {
         ultrasonicReady = true;
     }
-    ultrasonicFault = !ultrasonicReady;
-    obstacleWarning = data.distanceValid && data.distanceCm <= OBSTACLE_WARNING_CM;
-    bool obstacleCritical = data.distanceValid && data.distanceCm <= OBSTACLE_CRITICAL_CM;
-    gasWarning = data.gasState == GAS_WARNING || data.gasState == GAS_CRITICAL;
-    gasCritical = data.gasState == GAS_CRITICAL;
-    temperatureWarning = data.dhtValid && data.temperatureDeciC >= TEMP_WARNING_C * 10;
-    temperatureCritical = data.dhtValid && data.temperatureDeciC >= TEMP_CRITICAL_C * 10;
+    hazards.obstacle = !data.distanceValid ? LEVEL_NORMAL
+                       : data.distanceCm <= OBSTACLE_CRITICAL_CM ? LEVEL_ALERT
+                       : data.distanceCm <= OBSTACLE_WARNING_CM ? LEVEL_WARNING
+                                                               : LEVEL_NORMAL;
+    hazards.gas = data.gasState == GAS_CRITICAL ? LEVEL_CRITICAL
+                  : data.gasState == GAS_WARNING ? LEVEL_WARNING
+                                                 : LEVEL_NORMAL;
+    hazards.temperature = data.temperatureCritical ? LEVEL_CRITICAL
+                          : data.dhtValid && data.temperatureDeciC >= TEMP_WARNING_C * 10
+                              ? LEVEL_WARNING
+                              : LEVEL_NORMAL;
 
     int16_t pitch = abs(data.pitchDeg);
     int16_t roll = abs(data.rollDeg);
     int16_t greatestAngle = pitch > roll ? pitch : roll;
-    tiltWarning = data.mpuValid && greatestAngle >= TILT_WARNING_DEG;
-    tiltCritical = data.mpuValid && greatestAngle >= TILT_CRITICAL_DEG;
-    if (data.mpuValid && greatestAngle >= ROLLOVER_DEG) {
+    if (data.mpuValid) {
+        hazards.tilt = greatestAngle >= TILT_CRITICAL_DEG ? LEVEL_CRITICAL
+                     : greatestAngle >= TILT_WARNING_DEG ? LEVEL_WARNING
+                                                         : LEVEL_NORMAL;
+    } else if (hazards.tilt != LEVEL_CRITICAL) {
+        hazards.tilt = LEVEL_NORMAL;
+    }
+    bool newRollover = data.mpuValid && greatestAngle >= ROLLOVER_DEG &&
+                       !rolloverEmergency;
+    if (newRollover) {
         rolloverEmergency = true;
     }
 
-    bool newAlert = false;
-    if (obstacleWarning && !oldObstacleWarning) {
-        sendAlert(F("ALERT:OBSTACLE"));
-        newAlert = true;
+    bool ultrasonicAlert = !startupActive(now) && !ultrasonicReady;
+    if (hazards.obstacle == LEVEL_NORMAL) {
+        collisionCriticalAnnounced = false;
     }
-    if (gasCritical && !oldGasCritical) {
-        sendAlert(F("ALERT:GAS_CRITICAL"));
-        newAlert = true;
-    } else if (gasWarning && !oldGasWarning) {
-        sendAlert(F("ALERT:GAS_WARNING"));
-        newAlert = true;
-    }
-    if (temperatureCritical && !oldTemperatureCritical) {
-        sendAlert(F("ALERT:TEMPERATURE_CRITICAL"));
-        newAlert = true;
-    } else if (temperatureWarning && !oldTemperatureWarning) {
-        sendAlert(F("ALERT:TEMPERATURE_WARNING"));
-        newAlert = true;
-    }
-    if (tiltCritical && !oldTiltCritical) {
-        sendAlert(F("ALERT:TILT_CRITICAL"));
-        newAlert = true;
-    } else if (tiltWarning && !oldTiltWarning) {
-        sendAlert(F("ALERT:TILT_WARNING"));
-        newAlert = true;
-    }
-    if (ultrasonicFault && !oldUltrasonicFault) {
-        sendAlert(F("ALERT:ULTRASONIC_FAULT"));
-        newAlert = true;
-    }
-    oldObstacleWarning = obstacleWarning;
-    oldGasWarning = gasWarning;
-    oldGasCritical = gasCritical;
-    oldTemperatureWarning = temperatureWarning;
-    oldTemperatureCritical = temperatureCritical;
-    oldTiltWarning = tiltWarning;
-    oldTiltCritical = tiltCritical;
-    oldUltrasonicFault = ultrasonicFault;
 
-    bool temperatureStops = temperatureCritical && TEMP_CRITICAL_STOPS_MOTORS;
-    blockAllMotion = manualEmergency || rolloverEmergency || gasCritical ||
-                     tiltCritical || temperatureStops;
-    blockForward = blockAllMotion || obstacleCritical ||
-                   (ultrasonicFault && ULTRASONIC_FAILSAFE_BLOCK_FORWARD);
-    warningActive = blockAllMotion || obstacleWarning || gasWarning ||
-                    temperatureWarning || tiltWarning;
+    if (hazards.obstacle == LEVEL_ALERT) {
+        if (motion == MOTION_FORWARD) {
+            signalCollisionRisk();
+        } else if (previousHazards.obstacle != LEVEL_ALERT) {
+            queueEvent(LEVEL_ALERT, F("ALERT:OBSTACLE_CLOSE"));
+        }
+    } else if (hazards.obstacle == LEVEL_WARNING &&
+               previousHazards.obstacle == LEVEL_NORMAL) {
+        queueEvent(LEVEL_WARNING, F("WARNING:OBSTACLE"));
+    }
+    queueHazardRise(hazards.gas, previousHazards.gas,
+                    F("WARNING:GAS"), F("CRITICAL:GAS"));
+    queueHazardRise(hazards.temperature, previousHazards.temperature,
+                    F("WARNING:TEMPERATURE"), F("CRITICAL:TEMPERATURE"));
+    if (newRollover) {
+        queueEvent(LEVEL_CRITICAL, F("CRITICAL:ROLLOVER"));
+    } else {
+        queueHazardRise(hazards.tilt, previousHazards.tilt,
+                        F("WARNING:TILT"), F("CRITICAL:TILT"));
+    }
+    if (ultrasonicAlert && !oldUltrasonicAlert) {
+        queueEvent(LEVEL_ALERT, F("ALERT:ULTRASONIC_NOT_READY"));
+    }
+    previousHazards = hazards;
+    oldUltrasonicAlert = ultrasonicAlert;
+
+    blockAllMotion = manualEmergency || rolloverEmergency ||
+                     hazards.gas == LEVEL_CRITICAL ||
+                     hazards.temperature == LEVEL_CRITICAL ||
+                     hazards.tilt == LEVEL_CRITICAL;
+    blockForward = blockAllMotion || hazards.obstacle == LEVEL_ALERT ||
+                   (!ultrasonicReady && ULTRASONIC_FAILSAFE_BLOCK_FORWARD);
+    safetyLevel = blockAllMotion ? LEVEL_CRITICAL
+                : hazards.obstacle == LEVEL_ALERT || ultrasonicAlert ? LEVEL_ALERT
+                : hazards.obstacle == LEVEL_WARNING || hazards.gas == LEVEL_WARNING ||
+                      hazards.temperature == LEVEL_WARNING ||
+                      hazards.tilt == LEVEL_WARNING || data.pirMotion
+                    ? LEVEL_WARNING
+                    : LEVEL_NORMAL;
 
     if (startupActive(now) || !bluetoothConnected() || blockAllMotion ||
         (blockForward && motion == MOTION_FORWARD)) {
@@ -293,25 +334,17 @@ void updateSafety(uint32_t now) {
 
     if (motion != MOTION_STOP && elapsed(now, lastControlMs, COMMAND_TIMEOUT_MS)) {
         stopMotors();
-        sendAlert(F("ALERT:COMMAND_TIMEOUT"));
-        newAlert = true;
-    }
-
-    if (newAlert) {
-        pulseAlarm(now, ALERT_PULSE_MS);
+        queueEvent(LEVEL_ALERT, F("ALERT:COMMAND_TIMEOUT"));
     }
 }
 
-void sendSensorAlerts(uint32_t now) {
+void sendSensorEvents() {
     uint8_t events = sensorsConsumeEvents();
     if (events & SENSOR_EVENT_SOUND) {
-        sendAlert(F("ALERT:SOUND_DETECTED"));
-    }
-    if (events & SENSOR_EVENT_MOTION) {
-        sendAlert(F("ALERT:MOTION_DETECTED"));
-    }
-    if (events != 0) {
-        pulseAlarm(now, ALERT_PULSE_MS);
+        queueEvent(LEVEL_ALERT, F("ALERT:SOUND_DETECTED"));
+    } else if ((events & SENSOR_EVENT_MOTION) &&
+               hazards.obstacle == LEVEL_NORMAL) {
+        queueEvent(LEVEL_WARNING, F("WARNING:MOTION_DETECTED"));
     }
 }
 
@@ -330,13 +363,10 @@ const __FlashStringHelper* gasStateText(GasState state) {
 
 const __FlashStringHelper* robotStateText(uint32_t now) {
     if (blockAllMotion) {
-        return F("EMERGENCY");
+        return F("LOCKED");
     }
-    if (!elapsed(now, bootMs, STARTUP_DURATION_MS)) {
+    if (startupActive(now)) {
         return F("STARTUP");
-    }
-    if (warningActive) {
-        return F("WARNING");
     }
     if (scanPhase != SCAN_OFF) {
         return F("SCANNING");
@@ -347,17 +377,24 @@ const __FlashStringHelper* robotStateText(uint32_t now) {
     return F("IDLE");
 }
 
-void printSignedDecimal(Print& output, int16_t value) {
+const __FlashStringHelper* safetyLevelText(SafetyLevel level) {
+    switch (level) {
+        case LEVEL_WARNING:
+            return F("WARNING");
+        case LEVEL_ALERT:
+            return F("ALERT");
+        case LEVEL_CRITICAL:
+            return F("CRITICAL");
+        default:
+            return F("NORMAL");
+    }
+}
+
+void printDecimal(Print& output, int16_t value) {
     if (value < 0) {
         output.print('-');
         value = -value;
     }
-    output.print(value / 10);
-    output.print('.');
-    output.print(value % 10);
-}
-
-void printUnsignedDecimal(Print& output, uint16_t value) {
     output.print(value / 10);
     output.print('.');
     output.print(value % 10);
@@ -377,13 +414,13 @@ void printTelemetry(Print& output, uint32_t now, bool scan) {
     }
     output.print(F(",T:"));
     if (data.dhtValid) {
-        printSignedDecimal(output, data.temperatureDeciC);
+        printDecimal(output, data.temperatureDeciC);
     } else {
         output.print(F("NA"));
     }
     output.print(F(",H:"));
     if (data.dhtValid) {
-        printUnsignedDecimal(output, data.humidityDeciPct);
+        printDecimal(output, static_cast<int16_t>(data.humidityDeciPct));
     } else {
         output.print(F("NA"));
     }
@@ -414,11 +451,9 @@ void printTelemetry(Print& output, uint32_t now, bool scan) {
     output.print(F(",LIGHT:"));
     output.print(data.dark ? 1 : 0);
     output.print(F(",STATE:"));
-    output.println(robotStateText(now));
-}
-
-void sendTelemetry(uint32_t now, bool scan = false) {
-    printTelemetry(bluetooth, now, scan);
+    output.print(robotStateText(now));
+    output.print(F(",LEVEL:"));
+    output.println(safetyLevelText(safetyLevel));
 }
 
 void updateScan(uint32_t now) {
@@ -431,25 +466,18 @@ void updateScan(uint32_t now) {
     if (scanPhase == SCAN_SOUND && !sensorsSoundWindowActive()) {
         sensorsRefreshForScan(now);
         updateSafety(now);
-        sendTelemetry(now, true);
+        printTelemetry(bluetooth, now, true);
         scanPhase = SCAN_OFF;
     }
 }
 
 void updateOutputs(uint32_t now) {
     const SensorData& data = sensorsGetData();
-    bool headlightsOn = data.dark;
-    writeOutput(Pins::HEADLIGHT, headlightsOn, HEADLIGHT_ACTIVE_HIGH);
-
-    bool buzzerOn = false;
-    if (blockAllMotion) {
-        buzzerOn = ((now / EMERGENCY_BEEP_HALF_PERIOD_MS) & 1) == 0;
-    } else if (before(now, alarmUntilMs)) {
-        buzzerOn = true;
-    } else if (warningActive) {
-        buzzerOn = (now % WARNING_BEEP_PERIOD_MS) < WARNING_BEEP_ON_MS;
+    writeOutput(Pins::HEADLIGHT, data.dark, HEADLIGHT_ACTIVE_HIGH);
+    if (criticalBeepActive && elapsed(now, criticalBeepStartedMs, CRITICAL_BEEP_MS)) {
+        criticalBeepActive = false;
     }
-    writeOutput(Pins::ALARM, buzzerOn, BUZZER_ACTIVE_HIGH);
+    writeOutput(Pins::ALARM, criticalBeepActive, BUZZER_ACTIVE_HIGH);
 }
 
 void setup() {
@@ -486,13 +514,14 @@ void loop() {
     uint32_t now = millis();
     processBluetooth(now);
     sensorsUpdate(now, motion != MOTION_STOP, scanPhase != SCAN_OFF);
-    sendSensorAlerts(now);
     updateSafety(now);
     updateScan(now);
-    updateOutputs(now);
+    sendSensorEvents();
+    flushEvent(millis());
+    updateOutputs(millis());
 
     if (elapsed(now, lastTelemetryMs, TELEMETRY_PERIOD_MS)) {
         lastTelemetryMs = now;
-        sendTelemetry(now);
+        printTelemetry(bluetooth, now, false);
     }
 }

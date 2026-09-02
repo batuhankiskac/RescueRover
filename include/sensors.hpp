@@ -22,6 +22,7 @@ struct SensorData {
     GasState gasState;
     bool distanceValid;
     bool dhtValid;
+    bool temperatureCritical;
     bool mpuValid;
     bool pirMotion;
     bool dark;

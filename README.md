@@ -29,14 +29,14 @@ has been electrically checked and tested in a controlled area.
 | A0 | MQ-135 AO | Analog input |
 | A1 | Sound module AO | Analog input |
 | A2 | 4-pin light module AO | Analog input |
-| A3 | Active buzzer | Digital output; shared alarm output |
+| A3 | Active buzzer | Digital output; critical-event alarm only |
 | A4 | MPU6050 SDA | I2C |
 | A5 | MPU6050 SCL | I2C |
 
 There are no pin conflicts. SoftwareSerial uses D10/D11, Timer 2 PWM is used on
 D3, and the MPU6050 owns A4/A5. The Uno has no pin left for a separate warning
-LED, so A3 is the one alarm output. The analog light sensor uses A2, while the
-headlight driver was moved to D13. D0 is reserved for the HC-05 STATE input;
+LED, so A3 is the critical-event buzzer output. The analog light sensor uses A2,
+while the headlight driver was moved to D13. D0 is reserved for the HC-05 STATE input;
 D1 remains available for the USB upload/serial TX function.
 
 ## Project tree
@@ -67,10 +67,10 @@ The application still owns filtering, scheduling, safety checks, and telemetry.
 
 The final checked build uses:
 
-- Flash: 20,744 bytes of 32,256 bytes (64.3%)
-- Static SRAM: 668 bytes of 2,048 bytes (32.6%)
+- Flash: 20,864 bytes of 32,256 bytes (64.7%)
+- Static SRAM: 673 bytes of 2,048 bytes (32.9%)
 
-That leaves 1,380 bytes for stack and runtime use. The MPU6050 library creates
+That leaves 1,375 bytes for stack and runtime use. The MPU6050 library creates
 its I2C adapter during setup; no application-level allocation occurs in the
 main loop.
 
@@ -143,10 +143,9 @@ The supplied thresholds are starting values only:
 
 - Measure clear-path HC-SR04 behavior and choose obstacle distances for the
   actual rover speed and stopping distance. At startup, three valid readings
-  are required before forward motion is allowed. After that validation, no echo
-  is treated as an open path beyond the configured range; `D:NA` remains visible
-  without an audible warning. A new close reading bypasses the three-sample
-  median delay.
+  are required before forward motion is allowed. After validation, no echo is
+  treated as an open path beyond range and remains visible as `D:NA`. A new
+  close reading bypasses the three-sample median delay.
 - Log MQ-135 raw and filtered values in clean air after stabilization. Set
   `GAS_BASELINE_ADC`, `GAS_WARNING_ABOVE_BASELINE`, and
   `GAS_CRITICAL_ABOVE_BASELINE`. The development warm-up is 60 seconds, but a
@@ -156,10 +155,10 @@ The supplied thresholds are starting values only:
   and is not a professional gas analyzer.**
 - Observe `SND` with the rover stationary in representative ambient noise and
   set `SOUND_THRESHOLD` above that noise floor. The module detects only acoustic
-  level/activity. It does not recognize speech or the word “help.”
+  level/activity; it does not recognize speech or the word “help.”
 - Let the HC-SR501 stabilize, then tune its onboard sensitivity/time controls.
   PIR results are accepted only while stationary; a scan performed during its
-  startup period reports no motion.
+  startup period reports no motion. `PIR:1` remains available in telemetry.
 - Mount the MPU6050 rigidly and level. Adjust `MPU_PITCH_OFFSET_DEG` and
   `MPU_ROLL_OFFSET_DEG`, then test warning, critical, and rollover angles while
   supporting the rover. Accelerometer-only angles are affected by vehicle
@@ -170,7 +169,9 @@ The supplied thresholds are starting values only:
   set `LIGHT_ANALOG_DARK_BELOW` to `0`.
 - Compare DHT11 results with a reference meter before choosing temperature
   warnings. The DHT11 is low-resolution and is deliberately read no faster than
-  every two seconds.
+  every two seconds. Two consecutive valid readings at or above 60 °C are required
+  to enter critical temperature, and two consecutive valid readings below 60 °C
+  are required to clear it. Invalid reads never clear an active critical lock.
 
 ## Bluetooth protocol
 
@@ -195,10 +196,11 @@ ignored. Press Space for a normal stop or `X` for the latched emergency stop.
 
 A movement command authorizes motion for only 1000 ms. Repeat the direction or
 send `P` before the timeout. Loss of traffic produces `ALERT:COMMAND_TIMEOUT`
-and stops the motors. The firmware also stops and rejects movement whenever the
-HC-05 STATE input is LOW. If the exact module uses inverted STATE logic, change
-`BT_STATE_ACTIVE_HIGH` in `include/config.hpp`. Headlights are always controlled
-automatically by the light sensor; there are no manual headlight commands.
+and silently stops the motors. The firmware also stops and rejects movement
+whenever the HC-05 STATE input is LOW. If the exact module uses inverted STATE
+logic, change `BT_STATE_ACTIVE_HIGH` in `include/config.hpp`. Headlights are
+always controlled automatically by the light sensor; there are no manual
+headlight commands.
 
 On macOS, pair the HC-05, locate its serial device with `ls /dev/tty.*`, and
 connect with a serial terminal at 9600 baud. One simple option is:
@@ -212,31 +214,48 @@ name depends on the module and macOS pairing.
 
 ## States, scan, and safety
 
-The externally reported states are `STARTUP`, `IDLE`, `DRIVING`, `SCANNING`,
-`WARNING`, and `EMERGENCY`. Warning/emergency conditions take display priority
-over the underlying activity.
+Telemetry separates the operating state from safety severity. `STATE` is one of
+`STARTUP`, `IDLE`, `DRIVING`, `SCANNING`, or `LOCKED`. `LEVEL` is one of
+`NORMAL`, `WARNING`, `ALERT`, or `CRITICAL`, with the highest active condition
+winning. Transient events such as command timeout are carried by their immediate
+message and do not remain latched in `LEVEL`.
+
+Immediate message prefixes are real severity levels: `WARNING` is informational,
+`ALERT` requires attention or reports a protective action, and `CRITICAL` marks
+an immediate hazard. Non-hazard acknowledgements use `STATUS`. If several
+leveled events arise in the same loop pass, only one message at the highest
+severity is sent; ties keep the first detected event.
+
+| Condition | Reported severity | Motor action | Buzzer |
+|---|---|---|---|
+| PIR motion without a nearby obstacle | `WARNING` | None | Silent |
+| Sound detected | `ALERT` | None | Silent |
+| Ultrasonic not validated after startup | `ALERT` | Forward blocked | Silent |
+| Validated ultrasonic reports `D:NA` | `NORMAL` | None | Silent |
+| Obstacle at 11..30 cm | `WARNING` | None | Silent |
+| Obstacle at 10 cm or less while not advancing | `ALERT` | Forward blocked | Silent |
+| Obstacle at 10 cm or less while advancing/trying `W` | `CRITICAL` | Forward stopped/blocked | One 250 ms beep |
+| Gas, temperature, or tilt warning threshold | `WARNING` | None | Silent |
+| Gas, confirmed temperature, or tilt critical threshold | `CRITICAL` | All motion blocked | One 250 ms beep |
+| Rollover or `X` emergency stop | `CRITICAL` | All motion latched | One 250 ms beep |
+| Command timeout | `ALERT` | Current motion stopped | Silent |
+
+The table is the normative event/action mapping. Critical events selected in
+the same event cycle, or arriving during an active beep, share that beep; it is
+never extended or queued. A source beeps again only after clearing and re-entry.
 
 `T` stops the motors, waits 500 ms without blocking the main loop, opens a 50 ms
 incremental sound window, evaluates PIR, then refreshes DHT when its two-second
 limit allows, gas, distance, tilt, and light. It sends a `SCAN:` summary. A new
 movement command cancels a scan.
 
-Safety conditions are checked on every pass through `loop()` and before a new
-movement command is accepted:
-
-- A critical front obstacle stops forward motion and rejects new forward
-  commands. Backward/pivot escape remains available.
-- Missing/invalid ultrasonic data blocks forward motion until the sensor has
-  produced three valid startup readings. After validation, no echo is reported
-  as `D:NA` and treated as open path beyond the configured range.
-- Critical gas or critical tilt stops and blocks every motor command while the
-  condition exists.
-- A rollover angle latches the emergency state.
-- High temperature warns. Critical temperature stopping is available through
-  `TEMP_CRITICAL_STOPS_MOTORS` and is off by default.
-- Movement without a repeated command or heartbeat stops at the timeout.
-- `X` immediately stops and latches. `C` cannot clear while gas, tilt, or an
-  enabled temperature-stop condition remains critical.
+Safety is checked on every loop and before accepting motion. Backward and pivot
+escape remain available during a front-obstacle block; collision risk rearms
+only after the target leaves the 30 cm warning zone. Ultrasonic validation still
+requires three valid startup readings, while post-validation `D:NA` is treated
+as open path beyond range. Invalid DHT/MPU samples never clear active temperature
+or tilt critical state. Rollover and `X` remain latched until a safe `C`; active
+gas, temperature, tilt, or an invalid rollover reading rejects that command.
 
 ## Telemetry
 
@@ -244,21 +263,15 @@ Telemetry is sent every 500 ms to the Bluetooth terminal. It uses no JSON or
 formatting buffer:
 
 ```text
-D:34,T:26.0,H:58.0,G:412,GR:420,GS:NORMAL,SND:72,LRAW:318,PIR:0,PITCH:4,ROLL:2,LIGHT:1,STATE:DRIVING
+D:34,T:26.0,H:58.0,G:412,GR:420,GS:NORMAL,SND:72,LRAW:318,PIR:0,PITCH:4,ROLL:2,LIGHT:1,STATE:DRIVING,LEVEL:NORMAL
 ```
 
 `G` is filtered MQ-135 ADC, `GR` is raw ADC, and `GS` is `WARM`, `NORMAL`,
 `WARNING`, or `CRITICAL`. `NA` marks an invalid distance, DHT, or MPU reading.
-Immediate messages include:
-
-```text
-ALERT:OBSTACLE
-ALERT:GAS_CRITICAL
-ALERT:SOUND_DETECTED
-ALERT:MOTION_DETECTED
-ALERT:TILT_CRITICAL
-ALERT:COMMAND_TIMEOUT
-```
+Immediate messages include `WARNING:OBSTACLE`, `WARNING:MOTION_DETECTED`,
+`ALERT:OBSTACLE_CLOSE`, `ALERT:SOUND_DETECTED`, `ALERT:COMMAND_TIMEOUT`,
+`CRITICAL:COLLISION_RISK`, `CRITICAL:GAS`, `CRITICAL:TILT`, and
+`STATUS:EMERGENCY_CLEARED`.
 
 ## Build, upload, and terminal connection
 
@@ -275,49 +288,47 @@ Bluetooth terminal.
 ## Controlled test procedure
 
 Start with the rover raised so its wheels cannot touch anything. Keep the motor
-supply off while checking sensors. Watch the Bluetooth terminal throughout.
+supply off while checking sensors and watch Bluetooth throughout. These physical
+tests are still pending; a successful build does not validate sensor behavior.
 
-1. **Motor directions:** connect a working HC-SR04 with clear space, power the
-   motor stage, and send repeated `W`, `S`, `A`, and `D`; press Space to stop.
-   Confirm both sides and test speed digits at low settings first.
-2. **Bluetooth:** confirm `RESCUE_ROVER:READY`, send `?`, then verify each command
-   and all telemetry from the Mac terminal.
-3. **Command timeout:** send `W` once and no heartbeat. Verify stopping at about
-   one second and `ALERT:COMMAND_TIMEOUT`.
-4. **Ultrasonic stop:** at low wheel speed, move a flat target from more than 30
-   cm to less than 10 cm. Verify warning, stop, and forward rejection; verify
-   `S` can escape. After startup validation, disconnect ECHO and verify `D:NA`
-   without a buzzer warning while forward motion remains available.
-5. **DHT11:** breathe near (not onto) the sensor or move it between environments.
-   Verify `T`/`H` update about every two seconds and failures show `NA`.
-6. **MQ-135:** after warm-up, observe clean-air raw/filtered values. For a bench
-   threshold test, temporarily set warning/critical values just above the
-   baseline rather than exposing the sensor to dangerous gas. Verify critical
-   gas stops all motors, then restore calibrated values.
-7. **Sound:** keep motors stopped, clap near the microphone, and verify increased
-   `SND` plus `ALERT:SOUND_DETECTED`. Confirm motor noise is not evaluated as a
-   new stationary sound window while driving.
-8. **PIR:** wait the full stabilization time, keep the rover stationary, move a
-   warm body across its field, and verify `PIR:1` and the motion alert. Confirm
-   it is suppressed while driving.
-9. **Tilt:** with motors unpowered, slowly support and tilt the chassis through
-   warning and critical angles. Verify the alerts and critical motor block. Test
-   `C` only after returning below critical.
-10. **Automatic headlights:** cover/uncover the LDR. Verify `LRAW`, `LIGHT`, and
-    the lamps. If the analog direction is reversed, change
-    `LIGHT_ANALOG_DARK_BELOW`.
-11. **Emergency stop:** while wheels are raised and turning slowly, send `X`.
-    Verify immediate stop, rejected movement, `EMERGENCY`, and safe clearing by
-    `C`.
-12. **Scan mode:** send `T`, verify the motors stop, wait for the settle/sound
-    phases, and confirm one `SCAN:` summary containing every sensor.
-13. **Telemetry:** let the system run for several minutes. Confirm controlled
-    500 ms updates, immediate alerts, no corrupted lines, and no unexplained
-    resets.
-14. **Integration:** power all sensors and motor logic together, initially with
-    wheels raised. Exercise driving, heartbeat, obstacle stop, darkness, scan,
-    tilt, gas threshold, and emergency stop. Then perform a low-speed floor test
-    with a person ready to remove motor power.
+1. **Controls and Bluetooth:** confirm `RESCUE_ROVER:READY`, help, and telemetry.
+   With the wheels raised and a clear path, test repeated `W/S/A/D` commands and
+   Space; confirm both motor sides before any floor test.
+2. **Command timeout:** send `W` once without another command or heartbeat.
+   Confirm a silent stop and `ALERT:COMMAND_TIMEOUT` after about one second.
+3. **Ultrasonic:** verify silent warning at 20 cm and silent alert at 5 cm. Send
+   `W` at 5 cm and require one collision-risk beep plus forward rejection while
+   `S/A/D` remain available. Repeated `W` stays silent until the target passes
+   30 cm. After startup validation, disconnect ECHO and confirm silent `D:NA`
+   with forward motion available.
+4. **PIR:** after stabilization, test distant motion while stationary and verify
+   `PIR:1` plus `WARNING:MOTION_DETECTED`. Repeat with a target inside 30 cm:
+   `PIR:1` remains but the duplicate motion message is suppressed. Confirm PIR
+   events are suppressed while driving.
+5. **DHT11:** verify `T/H` updates and invalid readings. For a safe bench test,
+   temporarily move both temperature thresholds around the measured room value,
+   keeping warning below critical. Require two valid high readings to lock and
+   beep, two valid safe readings to clear, and no unlock on an invalid reading;
+   then restore the configured thresholds.
+6. **MQ-135:** after warm-up, observe clean-air raw and filtered values. Use
+   temporary bench thresholds rather than dangerous gas; verify silent warning,
+   one critical beep, full motor block, and restoration of calibrated values.
+7. **Sound:** while stationary, clap near the microphone and confirm increased
+   `SND` with silent `ALERT:SOUND_DETECTED`. Confirm driving noise does not start
+   a new stationary sound event.
+8. **Tilt and rollover:** with motor power off, cross warning, critical, and
+   rollover angles. Confirm silent warning, one critical beep, motor block,
+   invalid-MPU lock retention, and latched rollover. Test `C` only after a valid
+   below-critical reading.
+9. **Emergency stop:** while raised-wheel motion is active, send `X` and verify
+   immediate stop, one beep, locked telemetry, rejected movement, and safe `C`
+   acknowledgement through `STATUS:EMERGENCY_CLEARED`.
+10. **Outputs and scan:** cover and uncover the LDR to verify `LRAW`, `LIGHT`, and
+    headlights. Send `T` and confirm one complete `SCAN:` result after settling.
+11. **Telemetry and integration:** run every sensor, driving, heartbeat, scan,
+    and emergency case for several minutes. Require 500 ms `STATE`/`LEVEL`
+    telemetry, correct event prefixes, and no corruption or unexplained resets;
+    then perform a low-speed floor test with someone ready to cut motor power.
 
 ## Known limitations and Uno compromises
 
@@ -326,6 +337,10 @@ supply off while checking sensors. Watch the Bluetooth terminal throughout.
 - The separate warning LED was dropped because the Uno has no remaining pin.
 - One front ultrasonic sensor cannot see rear/side hazards; backward and pivot
   escape commands are not obstacle-protected.
+- The front PIR and ultrasonic sensor cannot prove that they see the same object.
+  PIR remains stationary-only context; a current ultrasonic obstacle within
+  30 cm suppresses only the duplicate PIR message, never the distance safety
+  decision or `PIR` telemetry value.
 - The HC-SR04 library call waits for an echo up to the configured 400 cm limit,
   and the DHT11 library read is blocking during its measurement. Both are
   scheduled infrequently; all other waiting, including scan settling and
