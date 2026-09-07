@@ -76,12 +76,15 @@ ScanPhase scanPhase = SCAN_OFF;
 uint8_t motorSpeed = DEFAULT_MOTOR_SPEED;
 // Logical directions remain separate from the physical pin polarity so either
 // motor side can detect an actual forward/reverse change before it is applied.
+// After a stop, they retain the last energized direction for the short guard
+// window so an immediate opposite command cannot bypass reversal dead-time.
 int8_t currentLeftDirection = 0;
 int8_t currentRightDirection = 0;
 Motion pendingMotion = MOTION_STOP;
 int8_t pendingLeftDirection = 0;
 int8_t pendingRightDirection = 0;
 bool motorReversePending = false;
+bool motorStopGuardActive = false;
 
 // These timestamps implement startup, command-refresh, telemetry, scan, and
 // beep deadlines without delay(), which keeps Bluetooth responsive.
@@ -91,6 +94,7 @@ uint32_t lastTelemetryMs = 0;
 uint32_t scanStartedMs = 0;
 uint32_t criticalBeepStartedMs = 0;
 uint32_t motorReverseStartedMs = 0;
+uint32_t motorStoppedMs = 0;
 // The buzzer output is a short pulse, not a continuous hazard-state output.
 bool criticalBeepActive = false;
 // Repeated instances of one pending event coalesce, while distinct events from
@@ -279,14 +283,18 @@ void cancelPendingMotion() {
     pendingRightDirection = 0;
 }
 
-void stopMotors() {
+void stopMotors(uint32_t now) {
+    const bool wasActive = motionActive();
     // Disable PWM first, then clear both direction pairs, and finally publish
     // the stopped state used by scan, sound, and telemetry logic.
     analogWrite(Pins::MOTOR_ENABLE_PWM, 0);
     writeMotorSide(Pins::MOTOR_LEFT_IN1, Pins::MOTOR_LEFT_IN2, 0, false);
     writeMotorSide(Pins::MOTOR_RIGHT_IN1, Pins::MOTOR_RIGHT_IN2, 0, false);
-    currentLeftDirection = 0;
-    currentRightDirection = 0;
+    if (wasActive &&
+        (currentLeftDirection != 0 || currentRightDirection != 0)) {
+        motorStoppedMs = now;
+        motorStopGuardActive = true;
+    }
     cancelPendingMotion();
     motion = MOTION_STOP;
 }
@@ -300,6 +308,7 @@ void applyMotorMotion(Motion newMotion, int8_t left, int8_t right) {
     analogWrite(Pins::MOTOR_ENABLE_PWM, motorSpeed);
     currentLeftDirection = left;
     currentRightDirection = right;
+    motorStopGuardActive = false;
     cancelPendingMotion();
     motion = newMotion;
 }
@@ -307,6 +316,13 @@ void applyMotorMotion(Motion newMotion, int8_t left, int8_t right) {
 // The L298N uses one shared PWM value. If either side would reverse, both sides
 // coast while the loop continues servicing commands, sensors, and safety.
 void runMotors(Motion newMotion, int8_t left, int8_t right, uint32_t now) {
+    if (motorStopGuardActive &&
+        elapsed(now, motorStoppedMs, MOTOR_REVERSE_DEADTIME_MS)) {
+        motorStopGuardActive = false;
+        currentLeftDirection = 0;
+        currentRightDirection = 0;
+    }
+
     const bool reversing =
         (currentLeftDirection != 0 && left != currentLeftDirection) ||
         (currentRightDirection != 0 && right != currentRightDirection);
@@ -320,8 +336,10 @@ void runMotors(Motion newMotion, int8_t left, int8_t right, uint32_t now) {
     writeMotorSide(Pins::MOTOR_RIGHT_IN1, Pins::MOTOR_RIGHT_IN2, 0, false);
     motion = MOTION_STOP;
     if (!motorReversePending) {
-        motorReverseStartedMs = now;
+        motorReverseStartedMs =
+            motorStopGuardActive ? motorStoppedMs : now;
     }
+    motorStopGuardActive = false;
     pendingMotion = newMotion;
     pendingLeftDirection = left;
     pendingRightDirection = right;
@@ -340,7 +358,7 @@ void moveRover(Motion requested, uint32_t now) {
     // Safety gates are checked before any non-stop command reaches the driver.
     if (requested == MOTION_STOP) {
         // Space is an immediate normal stop and also cancels a pending scan.
-        stopMotors();
+        stopMotors(now);
         scanPhase = SCAN_OFF;
         lastControlMs = now;
         return;
@@ -348,14 +366,14 @@ void moveRover(Motion requested, uint32_t now) {
 
     if (startupActive(now) || !bluetoothConnected()) {
         // A command cannot bypass the reset protection or a lost Bluetooth link.
-        stopMotors();
+        stopMotors(now);
         return;
     }
 
     if (blockAllMotion) {
         // Gas, temperature, tilt, rollover, and X emergency stop block every axis.
         if (motorReversePending) {
-            stopMotors();
+            stopMotors(now);
         }
         queueEvent(EVENT_MOTION_BLOCKED);
         return;
@@ -365,7 +383,7 @@ void moveRover(Motion requested, uint32_t now) {
         // Only forward is blocked by a front obstacle or an unvalidated sonar;
         // backward and pivot escape remain available unless all motion is locked.
         if (motorReversePending) {
-            stopMotors();
+            stopMotors(now);
         }
         if (hazards.obstacle == LEVEL_ALERT && !collisionCriticalAnnounced) {
             signalCollisionRisk();
@@ -406,11 +424,14 @@ void processBluetooth(uint32_t now) {
     }
 
     if (command >= '0' && command <= '9') {
-        // Map 0..9 linearly from the safe minimum to full PWM. This selects
-        // the speed for the next movement command without moving the rover.
+        // Map 0..9 linearly from the safe minimum to full PWM. A stopped rover
+        // stays stopped; active motion receives the new shared PWM immediately.
         uint8_t level = (uint8_t)(command - '0');
         motorSpeed = MIN_MOTOR_SPEED +
                      ((uint16_t)(255U - MIN_MOTOR_SPEED) * level) / 9U;
+        if (motion != MOTION_STOP && !motorReversePending) {
+            analogWrite(Pins::MOTOR_ENABLE_PWM, motorSpeed);
+        }
         bluetooth.print(F("STATUS:SPEED:"));
         bluetooth.print(motorSpeed);
         bluetooth.println();
@@ -439,14 +460,14 @@ void processBluetooth(uint32_t now) {
             break;
         case 'T':
             // Stop before scanning so motor vibration does not contaminate data.
-            stopMotors();
+            stopMotors(now);
             scanPhase = SCAN_SETTLING;
             scanStartedMs = now;
             break;
         case 'X':
             // X is latched and therefore cannot be cleared by another movement
             // command or by a transient sensor recovery.
-            stopMotors();
+            stopMotors(now);
             scanPhase = SCAN_OFF;
             if (!manualEmergency) {
                 manualEmergency = true;
@@ -581,13 +602,13 @@ void updateSafety(uint32_t now) {
         (motorReversePending && pendingMotion == MOTION_FORWARD);
     if (startupActive(now) || !bluetoothConnected() || blockAllMotion ||
         (blockForward && forwardActive)) {
-        stopMotors();
+        stopMotors(now);
     }
 
     if (motionActive() && elapsed(now, lastControlMs, COMMAND_TIMEOUT_MS)) {
         // Missing heartbeats stop motion even if Bluetooth remains electrically
         // connected, protecting against a silent terminal or dropped command.
-        stopMotors();
+        stopMotors(now);
         queueEvent(EVENT_COMMAND_TIMEOUT);
     }
 }
@@ -774,7 +795,7 @@ void setup() {
 
     pinMode(Pins::HEADLIGHT, OUTPUT);
     pinMode(Pins::ALARM, OUTPUT);
-    stopMotors();
+    stopMotors(bootMs);
     writeOutput(Pins::HEADLIGHT, false, HEADLIGHT_ACTIVE_HIGH);
     writeOutput(Pins::ALARM, false, BUZZER_ACTIVE_HIGH);
 
