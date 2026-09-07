@@ -34,6 +34,31 @@ enum SafetyLevel : uint8_t {
     LEVEL_CRITICAL
 };
 
+// Event IDs are ordered first by severity and then by source. A fixed bitmask
+// preserves simultaneous events without allocating a queue or message buffer.
+enum EventId : uint8_t {
+    EVENT_EMERGENCY_STOP,
+    EVENT_ROLLOVER,
+    EVENT_COLLISION_RISK,
+    EVENT_GAS_CRITICAL,
+    EVENT_TEMPERATURE_CRITICAL,
+    EVENT_TILT_CRITICAL,
+    EVENT_MOTION_BLOCKED,
+    EVENT_FORWARD_BLOCKED,
+    EVENT_CLEAR_REJECTED,
+    EVENT_OBSTACLE_CLOSE,
+    EVENT_ULTRASONIC_NOT_READY,
+    EVENT_COMMAND_TIMEOUT,
+    EVENT_SOUND_DETECTED,
+    EVENT_OBSTACLE_WARNING,
+    EVENT_GAS_WARNING,
+    EVENT_TEMPERATURE_WARNING,
+    EVENT_TILT_WARNING,
+    EVENT_MOTION_DETECTED,
+    EVENT_COUNT
+};
+static_assert(EVENT_COUNT <= 32, "Event bitmask exceeds uint32_t capacity");
+
 // One severity is tracked independently for each hazard source so a new hazard
 // can generate an event without losing the state of the other sensors.
 struct HazardLevels {
@@ -49,6 +74,14 @@ Motion motion = MOTION_STOP;
 ScanPhase scanPhase = SCAN_OFF;
 // The rover starts at the calibrated default; digits 0..9 can select a speed.
 uint8_t motorSpeed = DEFAULT_MOTOR_SPEED;
+// Logical directions remain separate from the physical pin polarity so either
+// motor side can detect an actual forward/reverse change before it is applied.
+int8_t currentLeftDirection = 0;
+int8_t currentRightDirection = 0;
+Motion pendingMotion = MOTION_STOP;
+int8_t pendingLeftDirection = 0;
+int8_t pendingRightDirection = 0;
+bool motorReversePending = false;
 
 // These timestamps implement startup, command-refresh, telemetry, scan, and
 // beep deadlines without delay(), which keeps Bluetooth responsive.
@@ -57,11 +90,13 @@ uint32_t lastControlMs = 0;
 uint32_t lastTelemetryMs = 0;
 uint32_t scanStartedMs = 0;
 uint32_t criticalBeepStartedMs = 0;
+uint32_t motorReverseStartedMs = 0;
 // The buzzer output is a short pulse, not a continuous hazard-state output.
 bool criticalBeepActive = false;
-// Events are coalesced until the end of the loop so one pass sends one message.
-SafetyLevel pendingEventLevel = LEVEL_NORMAL;
-const __FlashStringHelper* pendingEventMessage = NULL;
+// Repeated instances of one pending event coalesce, while distinct events from
+// the same loop remain queued for deterministic delivery on later passes.
+uint32_t pendingEventBits = 0;
+bool criticalBatchBeeped = false;
 
 // X and rollover are latched independently of transient sensor warnings.
 bool manualEmergency = false;
@@ -99,41 +134,105 @@ void writeOutput(uint8_t pin, bool on, bool activeHigh) {
     digitalWrite(pin, on == activeHigh ? HIGH : LOW);
 }
 
-void queueEvent(SafetyLevel level, const __FlashStringHelper* message) {
-    // Only the highest event from the current loop pass is sent.
-    if (pendingEventMessage == NULL || level > pendingEventLevel) {
-        // Replacing a lower event prevents a warning from hiding a critical
-        // collision, gas, temperature, tilt, or emergency message.
-        pendingEventLevel = level;
-        pendingEventMessage = message;
+SafetyLevel eventLevel(EventId event) {
+    if (event <= EVENT_TILT_CRITICAL) {
+        return LEVEL_CRITICAL;
+    }
+    if (event <= EVENT_SOUND_DETECTED) {
+        return LEVEL_ALERT;
+    }
+    return LEVEL_WARNING;
+}
+
+const __FlashStringHelper* eventMessage(EventId event) {
+    switch (event) {
+        case EVENT_EMERGENCY_STOP:
+            return F("CRITICAL:EMERGENCY_STOP");
+        case EVENT_ROLLOVER:
+            return F("CRITICAL:ROLLOVER");
+        case EVENT_COLLISION_RISK:
+            return F("CRITICAL:COLLISION_RISK");
+        case EVENT_GAS_CRITICAL:
+            return F("CRITICAL:GAS");
+        case EVENT_TEMPERATURE_CRITICAL:
+            return F("CRITICAL:TEMPERATURE");
+        case EVENT_TILT_CRITICAL:
+            return F("CRITICAL:TILT");
+        case EVENT_MOTION_BLOCKED:
+            return F("ALERT:MOTION_BLOCKED");
+        case EVENT_FORWARD_BLOCKED:
+            return F("ALERT:FORWARD_BLOCKED");
+        case EVENT_CLEAR_REJECTED:
+            return F("ALERT:CLEAR_REJECTED");
+        case EVENT_OBSTACLE_CLOSE:
+            return F("ALERT:OBSTACLE_CLOSE");
+        case EVENT_ULTRASONIC_NOT_READY:
+            return F("ALERT:ULTRASONIC_NOT_READY");
+        case EVENT_COMMAND_TIMEOUT:
+            return F("ALERT:COMMAND_TIMEOUT");
+        case EVENT_SOUND_DETECTED:
+            return F("ALERT:SOUND_DETECTED");
+        case EVENT_OBSTACLE_WARNING:
+            return F("WARNING:OBSTACLE");
+        case EVENT_GAS_WARNING:
+            return F("WARNING:GAS");
+        case EVENT_TEMPERATURE_WARNING:
+            return F("WARNING:TEMPERATURE");
+        case EVENT_TILT_WARNING:
+            return F("WARNING:TILT");
+        case EVENT_MOTION_DETECTED:
+            return F("WARNING:MOTION_DETECTED");
+        default:
+            return F("");
     }
 }
 
-void flushEvent(uint32_t now) {
-    if (pendingEventMessage == NULL) {
+void queueEvent(EventId event) {
+    pendingEventBits |= 1UL << event;
+}
+
+void flushEvent() {
+    if (pendingEventBits == 0) {
         // No event means no Bluetooth traffic and no buzzer change.
         return;
     }
-    bool startBeep = pendingEventLevel == LEVEL_CRITICAL &&
-                     (!criticalBeepActive ||
-                      elapsed(now, criticalBeepStartedMs, CRITICAL_BEEP_MS));
-    // Send the textual event before clearing the pending state.
-    bluetooth.println(pendingEventMessage);
-    // Critical events share a short beep instead of extending a beep queue.
-    if (startBeep) {
-        criticalBeepActive = true;
-        criticalBeepStartedMs = millis();
+
+    uint8_t selected = 0;
+    while ((pendingEventBits & (1UL << selected)) == 0) {
+        ++selected;
     }
-    pendingEventLevel = LEVEL_NORMAL;
-    pendingEventMessage = NULL;
+    const EventId event = static_cast<EventId>(selected);
+    const SafetyLevel level = eventLevel(event);
+    const bool critical = level == LEVEL_CRITICAL;
+    const bool previousBeepExpired = criticalBeepActive &&
+        elapsed(millis(), criticalBeepStartedMs, CRITICAL_BEEP_MS);
+    const bool startBeep = critical && !criticalBatchBeeped &&
+                           (!criticalBeepActive || previousBeepExpired);
+
+    // Transmit first so the non-blocking beep duration starts after the slow
+    // SoftwareSerial write rather than being shortened by it.
+    bluetooth.println(eventMessage(event));
+    pendingEventBits &= ~(1UL << selected);
+    if (critical) {
+        criticalBatchBeeped = true;
+        if (startBeep) {
+            criticalBeepActive = true;
+            criticalBeepStartedMs = millis();
+        }
+    }
+
+    const uint32_t criticalMask =
+        (1UL << (static_cast<uint8_t>(EVENT_TILT_CRITICAL) + 1U)) - 1UL;
+    if ((pendingEventBits & criticalMask) == 0) {
+        criticalBatchBeeped = false;
+    }
 }
 
 void queueHazardRise(SafetyLevel current, SafetyLevel previous,
-                     const __FlashStringHelper* warningMessage,
-                     const __FlashStringHelper* criticalMessage) {
+                     EventId warningEvent, EventId criticalEvent) {
     if (current > previous) {
         // Announce only a severity increase; steady hazards do not spam the link.
-        queueEvent(current, current == LEVEL_CRITICAL ? criticalMessage : warningMessage);
+        queueEvent(current == LEVEL_CRITICAL ? criticalEvent : warningEvent);
     }
 }
 
@@ -143,7 +242,7 @@ void signalCollisionRisk() {
         return;
     }
     collisionCriticalAnnounced = true;
-    queueEvent(LEVEL_CRITICAL, F("CRITICAL:COLLISION_RISK"));
+    queueEvent(EVENT_COLLISION_RISK);
 }
 
 // Apply a direction correction without changing the requested rover motion.
@@ -169,25 +268,72 @@ void writeMotorSide(uint8_t pin1, uint8_t pin2, int8_t direction, bool reversed)
     }
 }
 
+bool motionActive() {
+    return motion != MOTION_STOP || motorReversePending;
+}
+
+void cancelPendingMotion() {
+    motorReversePending = false;
+    pendingMotion = MOTION_STOP;
+    pendingLeftDirection = 0;
+    pendingRightDirection = 0;
+}
+
 void stopMotors() {
     // Disable PWM first, then clear both direction pairs, and finally publish
     // the stopped state used by scan, sound, and telemetry logic.
     analogWrite(Pins::MOTOR_ENABLE_PWM, 0);
     writeMotorSide(Pins::MOTOR_LEFT_IN1, Pins::MOTOR_LEFT_IN2, 0, false);
     writeMotorSide(Pins::MOTOR_RIGHT_IN1, Pins::MOTOR_RIGHT_IN2, 0, false);
+    currentLeftDirection = 0;
+    currentRightDirection = 0;
+    cancelPendingMotion();
     motion = MOTION_STOP;
 }
 
-// The L298N uses one shared PWM value for both motor sides. PWM is disabled
-// while direction pins change to avoid a powered transition between polarities.
-void runMotors(Motion newMotion, int8_t left, int8_t right) {
+void applyMotorMotion(Motion newMotion, int8_t left, int8_t right) {
     analogWrite(Pins::MOTOR_ENABLE_PWM, 0);
     writeMotorSide(Pins::MOTOR_LEFT_IN1, Pins::MOTOR_LEFT_IN2,
                    left, MOTOR_LEFT_REVERSED != 0);
     writeMotorSide(Pins::MOTOR_RIGHT_IN1, Pins::MOTOR_RIGHT_IN2,
                    right, MOTOR_RIGHT_REVERSED != 0);
     analogWrite(Pins::MOTOR_ENABLE_PWM, motorSpeed);
+    currentLeftDirection = left;
+    currentRightDirection = right;
+    cancelPendingMotion();
     motion = newMotion;
+}
+
+// The L298N uses one shared PWM value. If either side would reverse, both sides
+// coast while the loop continues servicing commands, sensors, and safety.
+void runMotors(Motion newMotion, int8_t left, int8_t right, uint32_t now) {
+    const bool reversing =
+        (currentLeftDirection != 0 && left != currentLeftDirection) ||
+        (currentRightDirection != 0 && right != currentRightDirection);
+    if (!reversing) {
+        applyMotorMotion(newMotion, left, right);
+        return;
+    }
+
+    analogWrite(Pins::MOTOR_ENABLE_PWM, 0);
+    writeMotorSide(Pins::MOTOR_LEFT_IN1, Pins::MOTOR_LEFT_IN2, 0, false);
+    writeMotorSide(Pins::MOTOR_RIGHT_IN1, Pins::MOTOR_RIGHT_IN2, 0, false);
+    motion = MOTION_STOP;
+    if (!motorReversePending) {
+        motorReverseStartedMs = now;
+    }
+    pendingMotion = newMotion;
+    pendingLeftDirection = left;
+    pendingRightDirection = right;
+    motorReversePending = true;
+}
+
+void updatePendingMotion(uint32_t now) {
+    if (!motorReversePending ||
+        !elapsed(now, motorReverseStartedMs, MOTOR_REVERSE_DEADTIME_MS)) {
+        return;
+    }
+    applyMotorMotion(pendingMotion, pendingLeftDirection, pendingRightDirection);
 }
 
 void moveRover(Motion requested, uint32_t now) {
@@ -208,33 +354,39 @@ void moveRover(Motion requested, uint32_t now) {
 
     if (blockAllMotion) {
         // Gas, temperature, tilt, rollover, and X emergency stop block every axis.
-        queueEvent(LEVEL_ALERT, F("ALERT:MOTION_BLOCKED"));
+        if (motorReversePending) {
+            stopMotors();
+        }
+        queueEvent(EVENT_MOTION_BLOCKED);
         return;
     }
 
     if (blockForward && requested == MOTION_FORWARD) {
         // Only forward is blocked by a front obstacle or an unvalidated sonar;
         // backward and pivot escape remain available unless all motion is locked.
+        if (motorReversePending) {
+            stopMotors();
+        }
         if (hazards.obstacle == LEVEL_ALERT && !collisionCriticalAnnounced) {
             signalCollisionRisk();
         } else if (hazards.obstacle != LEVEL_ALERT) {
-            queueEvent(LEVEL_ALERT, F("ALERT:FORWARD_BLOCKED"));
+            queueEvent(EVENT_FORWARD_BLOCKED);
         }
         return;
     }
 
     if (requested == MOTION_FORWARD) {
         // Both sides use positive logical direction for forward travel.
-        runMotors(requested, 1, 1);
+        runMotors(requested, 1, 1, now);
     } else if (requested == MOTION_BACKWARD) {
         // Both sides reverse together for backward travel.
-        runMotors(requested, -1, -1);
+        runMotors(requested, -1, -1, now);
     } else if (requested == MOTION_LEFT) {
         // Opposite side directions create a pivot to the left.
-        runMotors(requested, 1, -1);
+        runMotors(requested, 1, -1, now);
     } else {
         // The remaining movement value is right pivot.
-        runMotors(requested, -1, 1);
+        runMotors(requested, -1, 1, now);
     }
 
     scanPhase = SCAN_OFF;
@@ -259,6 +411,9 @@ void processBluetooth(uint32_t now) {
         uint8_t level = (uint8_t)(command - '0');
         motorSpeed = MIN_MOTOR_SPEED +
                      ((uint16_t)(255U - MIN_MOTOR_SPEED) * level) / 9U;
+        bluetooth.print(F("STATUS:SPEED:"));
+        bluetooth.print(motorSpeed);
+        bluetooth.println();
         return;
     }
 
@@ -295,22 +450,29 @@ void processBluetooth(uint32_t now) {
             scanPhase = SCAN_OFF;
             if (!manualEmergency) {
                 manualEmergency = true;
-                queueEvent(LEVEL_CRITICAL, F("CRITICAL:EMERGENCY_STOP"));
+                queueEvent(EVENT_EMERGENCY_STOP);
             }
             break;
-        case 'C':
+        case 'C': {
             // Clear is rejected while a critical source is still active or the
-            // rollover sensor is invalid, preserving the emergency latch.
+            // rollover reading is invalid or still unsafe.
+            const SensorData& data = sensorsGetData();
+            const int16_t pitch = abs(data.pitchDeg);
+            const int16_t roll = abs(data.rollDeg);
+            const int16_t greatestAngle = pitch > roll ? pitch : roll;
+            const bool rolloverUnsafe = rolloverEmergency &&
+                (!data.mpuValid || greatestAngle >= TILT_CRITICAL_DEG);
             if (hazards.gas == LEVEL_CRITICAL || hazards.tilt == LEVEL_CRITICAL ||
                 hazards.temperature == LEVEL_CRITICAL ||
-                (rolloverEmergency && !sensorsGetData().mpuValid)) {
-                queueEvent(LEVEL_ALERT, F("ALERT:CLEAR_REJECTED"));
+                rolloverUnsafe) {
+                queueEvent(EVENT_CLEAR_REJECTED);
             } else {
                 manualEmergency = false;
                 rolloverEmergency = false;
                 bluetooth.println(F("STATUS:EMERGENCY_CLEARED"));
             }
             break;
+        }
         case 'P':
             // P is a heartbeat that refreshes the same timeout as movement.
             lastControlMs = now;
@@ -325,11 +487,9 @@ void processBluetooth(uint32_t now) {
 void updateSafety(uint32_t now) {
     // Derive hazard levels first, then compute motion locks and telemetry state.
     const SensorData& data = sensorsGetData();
-    if (data.distanceValid) {
-        // Once three valid readings have passed, later D:NA means open path
-        // beyond range rather than an unvalidated startup sensor.
-        ultrasonicReady = true;
-    }
+    // The sensor layer tolerates temporary misses, marks repeated failures
+    // unavailable, and requires consecutive valid readings before recovery.
+    ultrasonicReady = data.distanceValid;
     // Invalid distance is handled separately by blockForward; it is not called
     // a nearby obstacle because no physical distance was measured.
     hazards.obstacle = !data.distanceValid ? LEVEL_NORMAL
@@ -351,14 +511,10 @@ void updateSafety(uint32_t now) {
     int16_t roll = abs(data.rollDeg);
     // Either axis can roll the chassis, so safety uses the greater magnitude.
     int16_t greatestAngle = pitch > roll ? pitch : roll;
-    if (data.mpuValid) {
-        hazards.tilt = greatestAngle >= TILT_CRITICAL_DEG ? LEVEL_CRITICAL
-                     : greatestAngle >= TILT_WARNING_DEG ? LEVEL_WARNING
-                                                         : LEVEL_NORMAL;
-    } else if (hazards.tilt != LEVEL_CRITICAL) {
-        // Invalid MPU data does not clear an already latched critical tilt.
-        hazards.tilt = LEVEL_NORMAL;
-    }
+    hazards.tilt = data.tiltCritical ? LEVEL_CRITICAL
+                 : data.mpuValid && greatestAngle >= TILT_WARNING_DEG
+                     ? LEVEL_WARNING
+                     : LEVEL_NORMAL;
     bool newRollover = data.mpuValid && greatestAngle >= ROLLOVER_DEG &&
                        !rolloverEmergency;
     if (newRollover) {
@@ -367,7 +523,7 @@ void updateSafety(uint32_t now) {
         rolloverEmergency = true;
     }
 
-    // A validated sensor may report D:NA for an open path beyond its range.
+    // Startup and runtime failure use the same unavailable-state alert edge.
     bool ultrasonicAlert = !startupActive(now) && !ultrasonicReady;
     if (hazards.obstacle == LEVEL_NORMAL) {
         // Leaving the close zone rearms the next collision-risk announcement.
@@ -381,25 +537,24 @@ void updateSafety(uint32_t now) {
         } else if (previousHazards.obstacle != LEVEL_ALERT) {
             // A static close obstacle blocks forward but does not beep until W
             // is actually attempted or the rover is already advancing.
-            queueEvent(LEVEL_ALERT, F("ALERT:OBSTACLE_CLOSE"));
+            queueEvent(EVENT_OBSTACLE_CLOSE);
         }
     } else if (hazards.obstacle == LEVEL_WARNING &&
                previousHazards.obstacle == LEVEL_NORMAL) {
-        queueEvent(LEVEL_WARNING, F("WARNING:OBSTACLE"));
+        queueEvent(EVENT_OBSTACLE_WARNING);
     }
     queueHazardRise(hazards.gas, previousHazards.gas,
-                    F("WARNING:GAS"), F("CRITICAL:GAS"));
+                    EVENT_GAS_WARNING, EVENT_GAS_CRITICAL);
     queueHazardRise(hazards.temperature, previousHazards.temperature,
-                    F("WARNING:TEMPERATURE"), F("CRITICAL:TEMPERATURE"));
+                    EVENT_TEMPERATURE_WARNING, EVENT_TEMPERATURE_CRITICAL);
     if (newRollover) {
-        queueEvent(LEVEL_CRITICAL, F("CRITICAL:ROLLOVER"));
-    } else {
-        queueHazardRise(hazards.tilt, previousHazards.tilt,
-                        F("WARNING:TILT"), F("CRITICAL:TILT"));
+        queueEvent(EVENT_ROLLOVER);
     }
+    queueHazardRise(hazards.tilt, previousHazards.tilt,
+                    EVENT_TILT_WARNING, EVENT_TILT_CRITICAL);
     if (ultrasonicAlert && !oldUltrasonicAlert) {
         // Report the startup validation failure once when it first appears.
-        queueEvent(LEVEL_ALERT, F("ALERT:ULTRASONIC_NOT_READY"));
+        queueEvent(EVENT_ULTRASONIC_NOT_READY);
     }
     previousHazards = hazards;
     oldUltrasonicAlert = ultrasonicAlert;
@@ -422,16 +577,18 @@ void updateSafety(uint32_t now) {
 
     // Apply the computed policy immediately so a newly detected hazard cannot
     // leave the motors running until the next command arrives.
+    const bool forwardActive = motion == MOTION_FORWARD ||
+        (motorReversePending && pendingMotion == MOTION_FORWARD);
     if (startupActive(now) || !bluetoothConnected() || blockAllMotion ||
-        (blockForward && motion == MOTION_FORWARD)) {
+        (blockForward && forwardActive)) {
         stopMotors();
     }
 
-    if (motion != MOTION_STOP && elapsed(now, lastControlMs, COMMAND_TIMEOUT_MS)) {
+    if (motionActive() && elapsed(now, lastControlMs, COMMAND_TIMEOUT_MS)) {
         // Missing heartbeats stop motion even if Bluetooth remains electrically
         // connected, protecting against a silent terminal or dropped command.
         stopMotors();
-        queueEvent(LEVEL_ALERT, F("ALERT:COMMAND_TIMEOUT"));
+        queueEvent(EVENT_COMMAND_TIMEOUT);
     }
 }
 
@@ -439,12 +596,13 @@ void sendSensorEvents() {
     uint8_t events = sensorsConsumeEvents();
     if (events & SENSOR_EVENT_SOUND) {
         // Sound is an operator-facing alert, not a reason to start the buzzer.
-        queueEvent(LEVEL_ALERT, F("ALERT:SOUND_DETECTED"));
-    } else if ((events & SENSOR_EVENT_MOTION) &&
-               hazards.obstacle == LEVEL_NORMAL) {
+        queueEvent(EVENT_SOUND_DETECTED);
+    }
+    if ((events & SENSOR_EVENT_MOTION) &&
+        hazards.obstacle == LEVEL_NORMAL) {
         // A nearby obstacle already explains the motion context, so suppress a
         // duplicate PIR warning while retaining PIR telemetry.
-        queueEvent(LEVEL_WARNING, F("WARNING:MOTION_DETECTED"));
+        queueEvent(EVENT_MOTION_DETECTED);
     }
 }
 
@@ -472,7 +630,7 @@ const __FlashStringHelper* robotStateText(uint32_t now) {
     if (scanPhase != SCAN_OFF) {
         return F("SCANNING");
     }
-    if (motion != MOTION_STOP) {
+    if (motionActive()) {
         return F("DRIVING");
     }
     return F("IDLE");
@@ -558,6 +716,8 @@ void printTelemetry(Print& output, uint32_t now, bool scan) {
     // LIGHT is a boolean interpretation; LRAW above preserves the calibration
     // evidence needed to tune the threshold later.
     output.print(data.dark ? 1 : 0);
+    output.print(F(",SPD:"));
+    output.print(motorSpeed);
     output.print(F(",STATE:"));
     output.print(robotStateText(now));
     output.print(F(",LEVEL:"));
@@ -634,12 +794,14 @@ void loop() {
     // Read one command before sensing so an operator stop is handled promptly.
     processBluetooth(now);
     // Refresh scheduled sensors with the current movement and scan state.
-    sensorsUpdate(now, motion != MOTION_STOP, scanPhase != SCAN_OFF);
+    sensorsUpdate(now, motionActive(), scanPhase != SCAN_OFF);
     // Safety runs after fresh data and before output/telemetry decisions.
     updateSafety(now);
+    // A reversal target can start only after the fresh safety pass accepts it.
+    updatePendingMotion(now);
     updateScan(now);
     sendSensorEvents();
-    flushEvent(millis());
+    flushEvent();
     updateOutputs(millis());
 
     if (elapsed(now, lastTelemetryMs, TELEMETRY_PERIOD_MS)) {

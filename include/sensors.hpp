@@ -33,6 +33,7 @@ struct SensorData {
     bool dhtValid;
     bool temperatureCritical;
     bool mpuValid;
+    bool tiltCritical;
     bool pirMotion;
     bool dark;
 };

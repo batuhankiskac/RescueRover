@@ -45,6 +45,7 @@ uint8_t distanceSampleIndex = 0;
 uint8_t ultrasonicFailures = 0;
 uint8_t distanceValidReadings = 0;
 uint8_t temperatureTransitionReadings = 0;
+uint8_t tiltTransitionReadings = 0;
 // The two filters are initialized from the first valid value to avoid a large
 // artificial transition from zero to the first real reading.
 bool gasFilterInitialized = false;
@@ -103,6 +104,7 @@ void readDistance() {
         // requirement. After validation, the failure limit controls validity.
         if (ultrasonicFailures >= ULTRASONIC_FAILURE_LIMIT) {
             data.distanceValid = false;
+            distanceValidReadings = 0;
         }
         if (distanceValidReadings < ULTRASONIC_VALID_READINGS_REQUIRED) {
             distanceValidReadings = 0;
@@ -187,15 +189,16 @@ void readDht11() {
     data.temperatureDeciC = static_cast<int16_t>(dht.readTemperature() * 10.0F);
     data.humidityDeciPct = static_cast<uint16_t>(dht.readHumidity() * 10.0F);
 
-    const bool criticalReading =
-        data.temperatureDeciC >= TEMP_CRITICAL_C * 10;
-    // Only a transition needs confirmation. Stable readings reset the counter,
-    // while two consecutive valid readings confirm entry or recovery.
-    if (criticalReading == data.temperatureCritical) {
+    const bool transitionReading = data.temperatureCritical
+        ? data.temperatureDeciC < TEMP_CRITICAL_CLEAR_C * 10
+        : data.temperatureDeciC >= TEMP_CRITICAL_C * 10;
+    // Only readings beyond the appropriate hysteresis boundary advance a
+    // transition. Values in the hysteresis band preserve the current state.
+    if (!transitionReading) {
         temperatureTransitionReadings = 0;
     } else if (++temperatureTransitionReadings >=
                TEMP_CRITICAL_READINGS_REQUIRED) {
-        data.temperatureCritical = criticalReading;
+        data.temperatureCritical = !data.temperatureCritical;
         temperatureTransitionReadings = 0;
     }
 }
@@ -207,6 +210,7 @@ void readMpu() {
     if (!mpuReady) {
         // Keep the value invalid so the safety layer does not trust old angles.
         data.mpuValid = false;
+        tiltTransitionReadings = 0;
         return;
     }
 
@@ -216,6 +220,7 @@ void readMpu() {
         // from a fresh sample instead of blending with stale data.
         data.mpuValid = false;
         mpuFilterInitialized = false;
+        tiltTransitionReadings = 0;
         return;
     }
 
@@ -223,6 +228,7 @@ void readMpu() {
     if (!mpu.getAccelerometerSensor()->getEvent(&acceleration)) {
         data.mpuValid = false;
         mpuFilterInitialized = false;
+        tiltTransitionReadings = 0;
         return;
     }
 
@@ -234,6 +240,7 @@ void readMpu() {
         // A zero vector is not a physical 1 g reading and indicates bad data.
         data.mpuValid = false;
         mpuFilterInitialized = false;
+        tiltTransitionReadings = 0;
         return;
     }
     const float roll = atan2f(ay, az) * RAD_TO_DEG_F + MPU_ROLL_OFFSET_DEG;
@@ -255,6 +262,21 @@ void readMpu() {
         data.pitchDeg = static_cast<int16_t>((static_cast<int32_t>(data.pitchDeg) * 3 + newPitch) / 4);
     }
     data.mpuValid = true;
+
+    const int16_t absolutePitch = abs(data.pitchDeg);
+    const int16_t absoluteRoll = abs(data.rollDeg);
+    const int16_t greatestAngle =
+        absolutePitch > absoluteRoll ? absolutePitch : absoluteRoll;
+    const bool transitionReading = data.tiltCritical
+        ? greatestAngle < TILT_CRITICAL_CLEAR_DEG
+        : greatestAngle >= TILT_CRITICAL_DEG;
+    if (!transitionReading) {
+        tiltTransitionReadings = 0;
+    } else if (++tiltTransitionReadings >=
+               TILT_CRITICAL_READINGS_REQUIRED) {
+        data.tiltCritical = !data.tiltCritical;
+        tiltTransitionReadings = 0;
+    }
 }
 
 // The light module is read through AO; the configured polarity determines

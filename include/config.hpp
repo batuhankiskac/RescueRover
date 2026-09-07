@@ -18,6 +18,7 @@
 // may select a temporary runtime speed after startup.
 #define DEFAULT_MOTOR_SPEED 170U
 #define MIN_MOTOR_SPEED 90U
+#define MOTOR_REVERSE_DEADTIME_MS 75UL
 
 // The assembled motor polarity is not identical on both sides, so the right
 // side is inverted in software instead of changing the movement commands.
@@ -43,10 +44,11 @@
 #define OBSTACLE_WARNING_CM 30U
 #define OBSTACLE_CRITICAL_CM 10U
 
-// A warning is reported at 45 C. Two consecutive readings at 60 C are needed
-// to enter or leave the critical state, which filters one bad sample.
+// A warning is reported at 45 C. Critical entry and recovery use separate
+// thresholds so two confirmed readings cannot oscillate around one boundary.
 #define TEMP_WARNING_C 45
-#define TEMP_CRITICAL_C 60
+#define TEMP_CRITICAL_C 48
+#define TEMP_CRITICAL_CLEAR_C 45
 #define TEMP_CRITICAL_READINGS_REQUIRED 2U
 
 // MQ-135 values are ADC readings. The sensor first warms up, then its filtered
@@ -72,6 +74,8 @@
 #define MPU_ROLL_OFFSET_DEG 0
 #define TILT_WARNING_DEG 30
 #define TILT_CRITICAL_DEG 50
+#define TILT_CRITICAL_CLEAR_DEG 45
+#define TILT_CRITICAL_READINGS_REQUIRED 3U
 #define ROLLOVER_DEG 70
 
 // The raw light threshold is interpreted according to the observed module
