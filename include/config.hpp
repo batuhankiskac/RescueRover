@@ -14,9 +14,10 @@
 // 500 ms gives the operator regular feedback without filling the slow
 // 9600-baud Bluetooth link with continuous output.
 #define TELEMETRY_PERIOD_MS 500UL
-// The motor speed is fixed so movement behavior is predictable and no command
-// can silently change the calibrated starting speed.
+// The default motor speed remains the calibrated starting speed. Digits 0..9
+// may select a temporary runtime speed after startup.
 #define DEFAULT_MOTOR_SPEED 170U
+#define MIN_MOTOR_SPEED 90U
 
 // The assembled motor polarity is not identical on both sides, so the right
 // side is inverted in software instead of changing the movement commands.

@@ -47,6 +47,8 @@ struct HazardLevels {
 Motion motion = MOTION_STOP;
 // A scan starts off and is enabled only by the T command.
 ScanPhase scanPhase = SCAN_OFF;
+// The rover starts at the calibrated default; digits 0..9 can select a speed.
+uint8_t motorSpeed = DEFAULT_MOTOR_SPEED;
 
 // These timestamps implement startup, command-refresh, telemetry, scan, and
 // beep deadlines without delay(), which keeps Bluetooth responsive.
@@ -184,7 +186,7 @@ void runMotors(Motion newMotion, int8_t left, int8_t right) {
                    left, MOTOR_LEFT_REVERSED != 0);
     writeMotorSide(Pins::MOTOR_RIGHT_IN1, Pins::MOTOR_RIGHT_IN2,
                    right, MOTOR_RIGHT_REVERSED != 0);
-    analogWrite(Pins::MOTOR_ENABLE_PWM, DEFAULT_MOTOR_SPEED);
+    analogWrite(Pins::MOTOR_ENABLE_PWM, motorSpeed);
     motion = newMotion;
 }
 
@@ -251,6 +253,15 @@ void processBluetooth(uint32_t now) {
         command -= 'a' - 'A';
     }
 
+    if (command >= '0' && command <= '9') {
+        // Map 0..9 linearly from the safe minimum to full PWM. This selects
+        // the speed for the next movement command without moving the rover.
+        uint8_t level = (uint8_t)(command - '0');
+        motorSpeed = MIN_MOTOR_SPEED +
+                     ((uint16_t)(255U - MIN_MOTOR_SPEED) * level) / 9U;
+        return;
+    }
+
     // Commands are case-insensitive; newline characters and unknown commands
     // are ignored by the switch below.
     switch (command) {
@@ -306,7 +317,7 @@ void processBluetooth(uint32_t now) {
             break;
         case '?':
             // Keep help text synchronized with the accepted command switch.
-            bluetooth.println(F("CMD:W,S,A,D,SPACE,T,X,C,P,?"));
+            bluetooth.println(F("CMD:W,S,A,D,SPACE,T,X,C,P,0-9,?"));
             break;
     }
 }
