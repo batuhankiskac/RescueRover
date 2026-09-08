@@ -91,11 +91,14 @@ uint16_t medianDistance() {
 // the main loop allows forward motion. NewPing returns an echo duration in
 // microseconds, and dividing by 58 converts the round-trip time to centimetres.
 void readDistance() {
-    const uint16_t centimeters = static_cast<uint16_t>(sonar.ping() / 58UL);
+    const unsigned int echoUs = sonar.ping();
+    const uint16_t centimeters =
+        echoUs == 0
+            ? ULTRASONIC_MAX_CM
+            : static_cast<uint16_t>(echoUs / 58UL);
 
-    // A zero result means no echo. Values outside the configured sensor range
-    // cannot be used for the obstacle decision, so they do not enter the
-    // median buffer.
+    // Values outside the configured sensor range cannot be used for the
+    // obstacle decision, so they do not enter the median buffer.
     if (centimeters < ULTRASONIC_MIN_CM || centimeters > ULTRASONIC_MAX_CM) {
         if (ultrasonicFailures < 255U) {
             ++ultrasonicFailures;
