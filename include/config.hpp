@@ -63,8 +63,8 @@
 // is the amplitude used for the threshold; it is not a calibrated dB value.
 #define SOUND_SAMPLE_WINDOW_MS 50UL
 #define SOUND_SAMPLE_INTERVAL_US 250UL
-#define SOUND_IDLE_PERIOD_MS 1000UL
-#define SOUND_THRESHOLD 90U
+#define SOUND_IDLE_PERIOD_MS 100UL
+#define SOUND_THRESHOLD 12U
 
 // The MPU6050 normally answers at 0x68; the implementation also tries 0x69.
 // Offsets correct mounting bias, while warning/critical/rollover define the
